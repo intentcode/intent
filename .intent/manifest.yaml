@@ -1,0 +1,22 @@
+version: 1
+default_lang: en
+
+intents:
+  - id: "001"
+    file: 001-smart-branch-discovery.intent.md
+    status: active
+  - id: "002"
+    file: 002-unified-diffviewer.intent.md
+    status: active
+  - id: "003"
+    file: 003-anchor-resolver.intent.md
+    status: active
+  - id: "004"
+    file: 004-browse-mode.intent.md
+    status: active
+  - id: "005"
+    file: 005-syntax-highlighting.intent.md
+    status: active
+  - id: "006"
+    file: 006-deep-dive.intent.md
+    status: active

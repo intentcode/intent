@@ -1,16 +1,28 @@
-.PHONY: build dev stop clean help
+.PHONY: build dev stop clean help install server dev-local
 
-IMAGE_NAME = codetale
-PROJECT_DIR = /Users/berengerouadi/WorkingLab/personal/codetale
-CONTAINER_NAME = codetale-dev
+IMAGE_NAME = intent
+PROJECT_DIR = /Users/berengerouadi/WorkingLab/personal/intent
+CONTAINER_NAME = intent-dev
 
 help:
-	@echo "Codetale - Available commands:"
+	@echo "Intent - Available commands:"
 	@echo ""
+	@echo "  make install  Install dependencies (npm)"
+	@echo "  make dev-local Start dev + server locally (npm)"
+	@echo "  make server   Start API server only (npm)"
 	@echo "  make build    Build Docker image"
-	@echo "  make dev      Start dev server (http://localhost:5173)"
-	@echo "  make stop     Stop dev server"
+	@echo "  make dev      Start dev server via Docker (http://localhost:5173)"
+	@echo "  make stop     Stop Docker dev server"
 	@echo "  make clean    Remove Docker image"
+
+install:
+	npm install
+
+server:
+	npm run server
+
+dev-local:
+	npm run dev:all
 
 build:
 	docker build -t $(IMAGE_NAME) .
