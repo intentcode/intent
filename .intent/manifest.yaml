@@ -32,3 +32,9 @@ intents:
   - id: "010"
     file: 010-github-oauth.intent.md
     status: active
+  - id: "011"
+    file: 011-integrated-landing-page.intent.md
+    status: active
+  - id: "012"
+    file: 012-ux-loading-optimizations.intent.md
+    status: active

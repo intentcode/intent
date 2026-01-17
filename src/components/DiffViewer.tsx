@@ -1,4 +1,4 @@
-import { useState, useMemo, useLayoutEffect, useRef, useCallback } from "react";
+import { useState, useMemo, useLayoutEffect, useRef, useCallback, useEffect } from "react";
 import type { DiffFile, DiffHunk } from "../lib/parseDiff";
 import type { ResolvedChunkAPI } from "../lib/api";
 import Prism from "prismjs";
@@ -88,6 +88,8 @@ interface DiffViewerProps {
   viewMode?: ViewMode;
   // UI translations
   translations?: Translations;
+  // Anchor of chunk to expand (controlled from parent)
+  expandChunkAnchor?: string;
 }
 
 const LINE_HEIGHT = 24; // pixels per line
@@ -155,7 +157,7 @@ const DEFAULT_TRANSLATIONS: Translations = {
   deepDiveTooltip: "Copy context to explore this chunk with Claude",
 };
 
-export function DiffViewer({ file, filename, onLinkClick, resolvedChunks, intentTitle, fullFileContent, viewMode = "diff", translations = DEFAULT_TRANSLATIONS }: DiffViewerProps) {
+export function DiffViewer({ file, filename, onLinkClick, resolvedChunks, intentTitle, fullFileContent, viewMode = "diff", translations = DEFAULT_TRANSLATIONS, expandChunkAnchor }: DiffViewerProps) {
   const [expandedChunks, setExpandedChunks] = useState<Set<string>>(new Set());
   const [chunkHeights, setChunkHeights] = useState<Map<string, number>>(new Map());
   const [activeChunk, setActiveChunk] = useState<string | null>(null);
@@ -178,6 +180,13 @@ export function DiffViewer({ file, filename, onLinkClick, resolvedChunks, intent
       return next;
     });
   };
+
+  // Expand chunk when controlled from parent (e.g., from story mode click)
+  useEffect(() => {
+    if (expandChunkAnchor) {
+      setExpandedChunks(prev => new Set(prev).add(expandChunkAnchor));
+    }
+  }, [expandChunkAnchor]);
 
   // Generate deep dive prompt and copy to clipboard
   const handleDeepDive = async (chunk: ResolvedChunkAPI) => {

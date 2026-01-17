@@ -1,5 +1,16 @@
 const API_BASE = "http://localhost:3001";
 
+// Custom error for API responses that need authentication
+export class AuthRequiredError extends Error {
+  needsAuth: boolean;
+
+  constructor(message: string, needsAuth: boolean = true) {
+    super(message);
+    this.name = "AuthRequiredError";
+    this.needsAuth = needsAuth;
+  }
+}
+
 export type DiffMode = "branches";
 
 // V2 Intent types (matching server response)
@@ -268,8 +279,14 @@ export async function fetchGitHubPR(
   });
 
   if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || "Failed to fetch GitHub PR");
+    const errorData = await res.json();
+    if (errorData.needsAuth) {
+      throw new AuthRequiredError(
+        errorData.error || "This repository may be private. Please login with GitHub to access it.",
+        true
+      );
+    }
+    throw new Error(errorData.error || "Failed to fetch GitHub PR");
   }
 
   return res.json();
