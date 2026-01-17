@@ -32,24 +32,36 @@ fr: Les dépôts privés nécessitent une authentification. En utilisant GitHub 
 
 ## Chunks
 
-### @file:api/auth/github.ts | OAuth Initiation Endpoint
+### @function:handler | OAuth Initiation Endpoint
 ### fr: Point d'entrée OAuth
-en: Redirects users to GitHub's authorization page. Stores the redirect URL in the state parameter to return users to their original page after authentication.
-fr: Redirige les utilisateurs vers la page d'autorisation GitHub. Stocke l'URL de redirection dans le paramètre state pour ramener les utilisateurs à leur page d'origine après authentification.
+en: Redirects users to GitHub's authorization page. Generates a CSRF nonce stored in both the state parameter and an httpOnly cookie. Validates redirect URL to prevent open redirect attacks.
+fr: Redirige les utilisateurs vers la page d'autorisation GitHub. Génère un nonce CSRF stocké dans le paramètre state et dans un cookie httpOnly. Valide l'URL de redirection pour prévenir les attaques open redirect.
 
 > Decision: Use state parameter for redirect URL to maintain navigation context
 > fr: Utiliser le paramètre state pour l'URL de redirection afin de maintenir le contexte de navigation
 
-### @file:api/auth/callback.ts | OAuth Callback Handler
+> Decision: Generate random nonce for CSRF protection - stored in both state and cookie, verified in callback
+> fr: Générer un nonce aléatoire pour la protection CSRF - stocké dans state et cookie, vérifié dans le callback
+
+> Decision: Validate redirect URL starts with / but not // to prevent open redirect attacks
+> fr: Valider que l'URL de redirection commence par / mais pas // pour prévenir les attaques open redirect
+
+### @pattern:OAuth callback error | OAuth Callback Handler
 ### fr: Gestionnaire de callback OAuth
-en: Handles the callback from GitHub after user authorization. Exchanges the authorization code for an access token, fetches user info, creates a JWT containing both user info and the GitHub token, and sets it as an httpOnly cookie.
-fr: Gère le callback de GitHub après l'autorisation de l'utilisateur. Échange le code d'autorisation contre un token d'accès, récupère les infos utilisateur, crée un JWT contenant les infos utilisateur et le token GitHub, et le définit comme cookie httpOnly.
+en: Handles the callback from GitHub after user authorization. Verifies the CSRF nonce from state matches the cookie. Exchanges the authorization code for an access token, fetches user info, creates a JWT containing both user info and the GitHub token, and sets it as an httpOnly cookie. Clears the nonce cookie after successful auth.
+fr: Gère le callback de GitHub après l'autorisation de l'utilisateur. Vérifie que le nonce CSRF du state correspond au cookie. Échange le code d'autorisation contre un token d'accès, récupère les infos utilisateur, crée un JWT contenant les infos utilisateur et le token GitHub, et le définit comme cookie httpOnly. Supprime le cookie nonce après une auth réussie.
+
+> Decision: Verify CSRF nonce matches between state and cookie to prevent CSRF attacks
+> fr: Vérifier que le nonce CSRF correspond entre state et cookie pour prévenir les attaques CSRF
 
 > Decision: Store GitHub token in JWT rather than server-side session for stateless architecture
 > fr: Stocker le token GitHub dans le JWT plutôt qu'une session serveur pour une architecture stateless
 
 > Decision: Use 7-day JWT expiration as a balance between security and UX
 > fr: Utiliser une expiration JWT de 7 jours comme compromis entre sécurité et UX
+
+> Decision: Clear nonce cookie after successful authentication to prevent reuse
+> fr: Supprimer le cookie nonce après une authentification réussie pour prévenir la réutilisation
 
 ### @file:api/_lib/github.ts | Shared Auth Utilities
 ### fr: Utilitaires d'authentification partagés

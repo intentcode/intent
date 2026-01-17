@@ -7,6 +7,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { code, state } = req.query;
+  const isProduction = process.env.NODE_ENV === 'production';
 
   if (!code || typeof code !== 'string') {
     return res.status(400).json({ error: 'Missing code parameter' });
@@ -14,6 +15,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (!GITHUB_CLIENT_ID || !GITHUB_CLIENT_SECRET) {
     return res.status(500).json({ error: 'GitHub OAuth not configured' });
+  }
+
+  // Extract nonce from cookie for CSRF verification
+  const cookies = req.headers.cookie || '';
+  const nonceMatch = cookies.match(/intent_oauth_nonce=([^;]+)/);
+  const cookieNonce = nonceMatch ? nonceMatch[1] : null;
+
+  // Parse state and verify nonce
+  let redirectUrl = '/';
+  if (state && typeof state === 'string') {
+    try {
+      const stateData = JSON.parse(Buffer.from(state, 'base64').toString());
+
+      // Verify CSRF nonce matches
+      if (!cookieNonce || cookieNonce !== stateData.nonce) {
+        return res.status(403).json({ error: 'Invalid state - possible CSRF attack' });
+      }
+
+      // Validate redirect is same-origin
+      if (stateData.redirect && stateData.redirect.startsWith('/') && !stateData.redirect.startsWith('//')) {
+        redirectUrl = stateData.redirect;
+      }
+    } catch {
+      return res.status(400).json({ error: 'Invalid state parameter' });
+    }
+  } else {
+    return res.status(400).json({ error: 'Missing state parameter' });
   }
 
   try {
@@ -63,20 +91,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .setExpirationTime('7d')
       .sign(secret);
 
-    // Parse redirect URL from state
-    let redirectUrl = '/';
-    if (state && typeof state === 'string') {
-      try {
-        const stateData = JSON.parse(Buffer.from(state, 'base64').toString());
-        redirectUrl = stateData.redirect || '/';
-      } catch {
-        // Invalid state, use default redirect
-      }
-    }
-
-    // Set JWT as httpOnly cookie
+    // Set JWT as httpOnly cookie and clear the nonce cookie
     res.setHeader('Set-Cookie', [
-      `intent_token=${jwt}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`,
+      `intent_token=${jwt}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}${isProduction ? '; Secure' : ''}`,
+      `intent_oauth_nonce=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${isProduction ? '; Secure' : ''}`,
     ]);
 
     // Redirect to app
