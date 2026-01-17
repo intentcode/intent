@@ -4,10 +4,5 @@
   "framework": "vite",
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api/:path*" }
-  ],
-  "env": {
-    "GITHUB_CLIENT_ID": "@github-client-id",
-    "GITHUB_CLIENT_SECRET": "@github-client-secret",
-    "JWT_SECRET": "@jwt-secret"
-  }
+  ]
 }
