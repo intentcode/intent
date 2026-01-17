@@ -4,14 +4,17 @@ import { parseDiff } from "./lib/parseDiff";
 import type { DiffFile, DiffHunk, DiffLine } from "./lib/parseDiff";
 import { DiffViewer } from "./components/DiffViewer";
 import { RepoSelector } from "./components/RepoSelector";
-import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, fetchGitHubBrowse, AuthRequiredError, type DiffMode, type IntentV2API } from "./lib/api";
+import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, fetchGitHubBrowse, AuthRequiredError, type DiffMode, type IntentV2API, type RepoInfo } from "./lib/api";
 import { getCurrentUser, loginWithGitHub, logout, type User } from "./lib/auth";
+import { TRANSLATIONS, setStoredLanguage, type Language } from "./lib/language";
 import "./App.css";
 
 type AppMode = "home" | "github-pr" | "github-compare" | "github-browse";
 
 interface AppProps {
   mode?: AppMode;
+  lang?: Language;
+  onLangChange?: (lang: Language) => void;
 }
 
 interface FileData {
@@ -20,7 +23,6 @@ interface FileData {
   fullFileContent?: string;
 }
 
-type Language = "en" | "fr" | "es" | "de";
 
 // Context to track what diff is being displayed
 interface DiffContext {
@@ -115,176 +117,27 @@ const LANGUAGES: { code: Language; label: string }[] = [
   { code: "de", label: "DE" },
 ];
 
-// UI translations
-const TRANSLATIONS: Record<Language, Record<string, string>> = {
-  en: {
-    new: "New",
-    existing: "Existing",
-    context: "CONTEXT",
-    notInDiff: "not in diff",
-    summary: "Summary:",
-    motivation: "Motivation:",
-    files: "Files:",
-    documentedFiles: "Documented files",
-    modifiedFiles: "Modified files",
-    warning: "Warning:",
-    staleWarning: "Some chunks have been modified since last update.",
-    obsoleteWarning: "Some chunks reference code that no longer exists.",
-    modified: "Modified",
-    obsolete: "Obsolete",
-    stale: "Stale",
-    noChanges: "No changes found",
-    selectRepo: "Select a repository",
-    loading: "Loading...",
-    objective: "Objective:",
-    risk: "Risk:",
-    viewDiff: "Diff",
-    viewBrowse: "Browse",
-    deepDive: "Ask Claude",
-    toastCopied: "Context copied! Paste it into Claude Code or claude.ai to explore this chunk.",
-    toastError: "Error copying to clipboard",
-    promptTitle: "Exploratory Parenthesis",
-    promptDisclaimer: "This is a parenthesis to better understand a piece of code. This is NOT a new task.\nAfter this exploration, we'll resume where we left off.",
-    promptContext: "Context",
-    promptFile: "File",
-    promptIntent: "Intent",
-    promptChunkToExplore: "Chunk to explore",
-    promptAnchor: "Anchor",
-    promptTitleLabel: "Title",
-    promptDescription: "Description",
-    promptDecisions: "Decisions",
-    promptSourceCode: "Source code",
-    promptLines: "lines",
-    promptCodeNotAvailable: "Code not available",
-    promptQuestion: "My question",
-    promptQuestionPlaceholder: "[Explain why this code is structured this way / What alternatives could have been used / I don't understand part X]",
-    deepDiveTooltip: "Copy context to explore this chunk with Claude",
-    storyMode: "Story Mode",
-    storyModeDesc: "Read intents as a narrative",
-    exitStoryMode: "Exit Story Mode",
-    chapter: "Chapter",
-    noIntentsForStory: "No intents to display in story mode",
-    showIntentFiles: "Show .intent",
-    hideIntentFiles: "Hide .intent",
-    expandAll: "Expand all folders",
-    collapseAll: "Collapse all folders",
-    noIntentTitle: "No intent documentation for this PR",
-    noIntentDesc: "This PR doesn't have intent documentation yet. Intents help reviewers understand the 'why' behind code changes.",
-    noIntentHint: "Intents are recommended for features, refactoring, and complex bug fixes. Small fixes and dependency updates usually don't need them.",
-    createIntent: "Learn how to create intents",
-  },
-  fr: {
-    new: "Nouveau",
-    existing: "Existant",
-    context: "CONTEXTE",
-    notInDiff: "hors diff",
-    summary: "Résumé:",
-    motivation: "Motivation:",
-    files: "Fichiers:",
-    documentedFiles: "Fichiers documentés",
-    modifiedFiles: "Fichiers modifiés",
-    warning: "Attention:",
-    staleWarning: "Certains chunks ont été modifiés depuis la dernière mise à jour.",
-    obsoleteWarning: "Certains chunks référencent du code qui n'existe plus.",
-    obsolete: "Obsolète",
-    stale: "Modifié",
-    modified: "Modifié",
-    noChanges: "Aucun changement trouvé",
-    selectRepo: "Sélectionner un dépôt",
-    loading: "Chargement...",
-    objective: "Objectif:",
-    risk: "Risque:",
-    viewDiff: "Diff",
-    viewBrowse: "Parcourir",
-    deepDive: "Demander à Claude",
-    toastCopied: "Contexte copié ! Colle-le dans Claude Code ou claude.ai pour explorer ce chunk.",
-    toastError: "Erreur lors de la copie",
-    promptTitle: "Parenthèse exploratoire",
-    promptDisclaimer: "Ceci est une parenthèse pour mieux comprendre un morceau de code. Ce n'est PAS une nouvelle tâche.\nAprès cette exploration, on reprendra là où on en était.",
-    promptContext: "Contexte",
-    promptFile: "Fichier",
-    promptIntent: "Intent",
-    promptChunkToExplore: "Chunk à explorer",
-    promptAnchor: "Ancre",
-    promptTitleLabel: "Titre",
-    promptDescription: "Description",
-    promptDecisions: "Décisions",
-    promptSourceCode: "Code source",
-    promptLines: "lignes",
-    promptCodeNotAvailable: "Code non disponible",
-    promptQuestion: "Ma question",
-    promptQuestionPlaceholder: "[Explique-moi pourquoi ce code est structuré ainsi / Quelles alternatives auraient été possibles / Je ne comprends pas la partie X]",
-    deepDiveTooltip: "Copier le contexte pour explorer ce chunk avec Claude",
-    storyMode: "Mode Récit",
-    storyModeDesc: "Lire les intents comme un récit",
-    exitStoryMode: "Quitter le mode récit",
-    chapter: "Chapitre",
-    noIntentsForStory: "Aucun intent à afficher en mode récit",
-    showIntentFiles: "Afficher .intent",
-    hideIntentFiles: "Masquer .intent",
-    expandAll: "Déplier tous les dossiers",
-    collapseAll: "Replier tous les dossiers",
-    noIntentTitle: "Pas de documentation intent pour cette PR",
-    noIntentDesc: "Cette PR n'a pas encore de documentation intent. Les intents aident les reviewers à comprendre le 'pourquoi' des changements.",
-    noIntentHint: "Les intents sont recommandés pour les features, refactoring et bugs complexes. Les petits fixes et mises à jour de dépendances n'en ont généralement pas besoin.",
-    createIntent: "Apprendre à créer des intents",
-  },
-  es: {
-    new: "Nuevo",
-    existing: "Existente",
-    context: "CONTEXTO",
-    notInDiff: "fuera del diff",
-    summary: "Resumen:",
-    motivation: "Motivación:",
-    files: "Archivos:",
-    documentedFiles: "Archivos documentados",
-    modifiedFiles: "Archivos modificados",
-    warning: "Atención:",
-    staleWarning: "Algunos chunks han sido modificados desde la última actualización.",
-    modified: "Modificado",
-    noChanges: "No se encontraron cambios",
-    selectRepo: "Seleccionar repositorio",
-    loading: "Cargando...",
-    objective: "Objetivo:",
-    risk: "Riesgo:",
-    viewDiff: "Diff",
-    viewBrowse: "Explorar",
-  },
-  de: {
-    new: "Neu",
-    existing: "Bestehend",
-    context: "KONTEXT",
-    notInDiff: "nicht im Diff",
-    summary: "Zusammenfassung:",
-    motivation: "Motivation:",
-    files: "Dateien:",
-    documentedFiles: "Dokumentierte Dateien",
-    modifiedFiles: "Geänderte Dateien",
-    warning: "Achtung:",
-    staleWarning: "Einige Chunks wurden seit dem letzten Update geändert.",
-    modified: "Geändert",
-    noChanges: "Keine Änderungen gefunden",
-    selectRepo: "Repository auswählen",
-    loading: "Laden...",
-    objective: "Ziel:",
-    risk: "Risiko:",
-    viewDiff: "Diff",
-    viewBrowse: "Durchsuchen",
-  },
-};
-
 type ViewMode = "diff" | "browse" | "story";
 
-function App({ mode }: AppProps) {
+function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
   const params = useParams<{ owner?: string; repo?: string; prNumber?: string; base?: string; head?: string; branch?: string }>();
   const [files, setFiles] = useState<FileData[]>([]);
   const [intentsV2, setIntentsV2] = useState<IntentV2API[]>([]);
   const [changedFiles, setChangedFiles] = useState<string[]>([]);
   const [allFileContents, setAllFileContents] = useState<Record<string, string>>({});
+  const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("diff");
-  const [lang, setLang] = useState<Language>("en");
+  const lang = propLang;
+  const setLang = (newLang: Language) => {
+    if (onLangChange) {
+      onLangChange(newLang);
+    }
+    setStoredLanguage(newLang);
+  };
   const [selectedIntentId, setSelectedIntentId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingContext, setLoadingContext] = useState<string | null>(null); // What we're loading
+  const [expandChunkAnchor, setExpandChunkAnchor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsAuth, setNeedsAuth] = useState(false);
   const [diffRequested, setDiffRequested] = useState(false);
@@ -367,6 +220,12 @@ function App({ mode }: AppProps) {
   // Translation helper
   const t = (key: string) => TRANSLATIONS[lang]?.[key] || TRANSLATIONS.en[key] || key;
 
+  // Helper: Switch view mode - direct state change, CSS handles transition
+  const switchViewMode = (newMode: ViewMode) => {
+    if (newMode === viewMode) return;
+    setViewMode(newMode);
+  };
+
   // Helper: check if any line in a range is visible in the diff hunks
   const isRangeInDiff = (filePath: string, startLine: number, endLine: number): boolean => {
     const file = files.find(f => {
@@ -393,8 +252,8 @@ function App({ mode }: AppProps) {
   // Show intent if it has at least one chunk in the diff
   // Keep ALL chunks of that intent (for context display)
   const filteredIntentsV2 = useMemo(() => {
-    // In browse mode, show all intents without filtering
-    if (viewMode === "browse") return intentsV2;
+    // In browse or story mode, show all intents without filtering
+    if (viewMode === "browse" || viewMode === "story") return intentsV2;
     if (files.length === 0) return intentsV2;
 
     return intentsV2.filter(intent => {
@@ -572,9 +431,10 @@ function App({ mode }: AppProps) {
       const { owner, repo, base, head } = lastGitHubBranchesRef.current;
       loadFromGitHubBranches(owner, repo, base, head, lang);
     } else if (lastGitHubBrowseRef.current) {
-      console.log('[Lang change] Reloading GitHub browse with lang:', lang);
+      console.log('[Lang change] Reloading GitHub browse with lang:', lang, 'viewMode:', viewMode);
       const { owner, repo, branch } = lastGitHubBrowseRef.current;
-      loadFromGitHubBrowse(owner, repo, branch, lang);
+      // Preserve view mode (story or browse) when reloading for language change
+      loadFromGitHubBrowse(owner, repo, branch, lang, true);
     } else if (viewMode === "story" && lastBrowseParamsRef.current) {
       const { repoPath, branch } = lastBrowseParamsRef.current;
       loadStory(repoPath, branch, lang);
@@ -591,6 +451,7 @@ function App({ mode }: AppProps) {
   // Load from git repo
   const loadFromRepo = async (repoPath: string, diffMode: DiffMode, base: string, head: string, langOverride?: Language) => {
     setLoading(true);
+    setLoadingContext("diff");
     setError(null);
     setDiffRequested(true);
     setDiffContext({
@@ -642,6 +503,7 @@ function App({ mode }: AppProps) {
   // Load browse mode - view a single branch with intents
   const loadBrowse = async (repoPath: string, branch: string, langOverride?: Language) => {
     setLoading(true);
+    setLoadingContext("browse");
     setError(null);
     setDiffRequested(true);
     setDiffContext({
@@ -696,6 +558,7 @@ function App({ mode }: AppProps) {
   // Load story mode - view intents only as a narrative
   const loadStory = async (repoPath: string, branch: string, langOverride?: Language) => {
     setLoading(true);
+    setLoadingContext("story");
     setError(null);
     setDiffRequested(true);
     setDiffContext({
@@ -730,6 +593,7 @@ function App({ mode }: AppProps) {
   // Load from GitHub PR
   const loadFromGitHub = async (owner: string, repo: string, prNumber: number, langOverride?: Language) => {
     setLoading(true);
+    setLoadingContext("github-pr");
     setError(null);
     setDiffRequested(true);
     setDiffContext({
@@ -784,6 +648,7 @@ function App({ mode }: AppProps) {
   // Load from GitHub branches comparison
   const loadFromGitHubBranches = async (owner: string, repo: string, base: string, head: string, langOverride?: Language) => {
     setLoading(true);
+    setLoadingContext("github-branches");
     setError(null);
     setDiffRequested(true);
     setDiffContext({
@@ -832,8 +697,9 @@ function App({ mode }: AppProps) {
   };
 
   // Load from GitHub browse mode (view a single branch with intents)
-  const loadFromGitHubBrowse = async (owner: string, repo: string, branch: string, langOverride?: Language) => {
+  const loadFromGitHubBrowse = async (owner: string, repo: string, branch: string, langOverride?: Language, preserveViewMode?: boolean) => {
     setLoading(true);
+    setLoadingContext("github-browse");
     setError(null);
     setDiffRequested(true);
     setDiffContext({
@@ -848,16 +714,19 @@ function App({ mode }: AppProps) {
     lastGitHubBranchesRef.current = null;
     lastLoadParamsRef.current = null;
     lastBrowseParamsRef.current = null;
-    setViewMode("browse");
+    if (!preserveViewMode) {
+      setViewMode("browse");
+    }
 
     try {
       const currentLang = langOverride ?? lang;
       const langParam = currentLang === "en" ? undefined : currentLang;
       const response = await fetchGitHubBrowse(owner, repo, branch, langParam);
 
-      // Store v2 intents
+      // Store v2 intents and repo info
       setIntentsV2(response.intentsV2 || []);
       setChangedFiles(response.files || []);
+      setRepoInfo(response.repoInfo || null);
 
       // Create file data for each file in intents
       const parsed: FileData[] = response.files.map((filePath) => {
@@ -1036,15 +905,15 @@ function App({ mode }: AppProps) {
         />
       )}
 
-      {/* Show diff context badge when a diff was requested */}
-      {diffContext && !loading && viewMode !== "story" && (
+      {/* Show diff context badge when a diff was requested - hide in browse mode when Project Overview is shown */}
+      {diffContext && !loading && viewMode !== "story" && viewMode !== "browse" && (
         <div className="diff-context-container">
           {renderDiffContextBadge()}
         </div>
       )}
 
-      {/* Story Mode - Full page narrative view */}
-      {viewMode === "story" && !loading && diffRequested && !error && (
+      {/* Story Mode - Collapsible section at top, code visible below */}
+      {viewMode === "story" && !loading && diffRequested && !error && filteredIntentsV2.length > 0 && (
         <div className="story-mode-page">
           <div className="story-header">
             <div className="story-header-left">
@@ -1055,13 +924,9 @@ function App({ mode }: AppProps) {
             </div>
             <button
               className="story-exit-btn"
-              onClick={() => {
-                if (lastBrowseParamsRef.current) {
-                  loadBrowse(lastBrowseParamsRef.current.repoPath, lastBrowseParamsRef.current.branch, lang);
-                }
-              }}
+              onClick={() => switchViewMode("browse")}
             >
-              {t('exitStoryMode')}
+              {t('backToCode')}
             </button>
           </div>
 
@@ -1115,10 +980,33 @@ function App({ mode }: AppProps) {
                   {intent.resolvedChunks.length > 0 && (
                     <div className="chapter-chunks">
                       {intent.resolvedChunks.map((chunk, chunkIdx) => (
-                        <div key={chunkIdx} className="story-chunk">
+                        <div
+                          key={chunkIdx}
+                          className="story-chunk story-chunk-clickable"
+                          onClick={() => {
+                            // Scroll immediately
+                            const chunkFile = intent.frontmatter.files[0] || '';
+                            const filename = chunkFile.split('/').pop() || chunkFile;
+                            const targetId = `chunk-${filename}-${chunk.anchor}`;
+                            const element = document.getElementById(targetId);
+                            if (element) {
+                              element.scrollIntoView({ behavior: "smooth", block: "center" });
+                              element.classList.add("chunk-highlight");
+                              setTimeout(() => element.classList.remove("chunk-highlight"), 2000);
+                            }
+
+                            // Expand chunk after 5ms
+                            setTimeout(() => {
+                              setExpandChunkAnchor(chunk.anchor);
+                              setTimeout(() => setExpandChunkAnchor(null), 100);
+                            }, 5);
+                          }}
+                          title={t('backToCode')}
+                        >
                           <div className="story-chunk-header">
                             <span className="story-chunk-anchor">{chunk.anchor}</span>
                             {chunk.title && <span className="story-chunk-title">{chunk.title}</span>}
+                            <span className="story-chunk-goto">→</span>
                           </div>
                           {chunk.description && (
                             <p className="story-chunk-description">{chunk.description}</p>
@@ -1201,9 +1089,82 @@ function App({ mode }: AppProps) {
         </div>
       )}
 
-      {/* Show intents even without code diff - unified design */}
+      {/* Show intents even without code diff - unified design (Browse Mode) */}
       {filteredFiles.length === 0 && !loading && diffRequested && !error && filteredIntentsV2.length > 0 && viewMode !== "story" && (
         <>
+          {/* Project Overview Header */}
+          <div className="project-overview">
+            <div className="project-overview-header">
+              <div className="project-overview-info">
+                <h2 className="project-overview-title">{t('projectOverview')}</h2>
+                <p className="project-overview-description">
+                  {repoInfo?.description || filteredIntentsV2[0]?.summary || t('noDescription')}
+                </p>
+                <div className="project-overview-meta">
+                  {repoInfo?.stars !== undefined && repoInfo.stars > 0 && (
+                    <span className="meta-item meta-stars">
+                      <span className="meta-icon-styled">★</span>
+                      <span className="meta-value">{repoInfo.stars.toLocaleString()}</span>
+                    </span>
+                  )}
+                  {repoInfo?.language && (
+                    <span className="meta-item meta-language">
+                      <span className="meta-dot"></span>
+                      <span className="meta-value">{repoInfo.language}</span>
+                    </span>
+                  )}
+                  <span className="meta-item meta-intents">
+                    <span className="meta-badge">{filteredIntentsV2.length}</span>
+                    <span className="meta-value">{t('intentsCount')}</span>
+                  </span>
+                  <span className="meta-item meta-files">
+                    <span className="meta-badge">{new Set(filteredIntentsV2.flatMap(i => i.frontmatter.files)).size}</span>
+                    <span className="meta-value">{t('filesDocumented')}</span>
+                  </span>
+                </div>
+                {/* Risk Overview */}
+                {filteredIntentsV2.some(i => i.frontmatter.risk) && (
+                  <div className="project-overview-risk">
+                    {filteredIntentsV2.filter(i => i.frontmatter.risk === 'high').length > 0 && (
+                      <span className="risk-item risk-high">
+                        <span className="risk-count">{filteredIntentsV2.filter(i => i.frontmatter.risk === 'high').length}</span>
+                        <span className="risk-label">{t('highRisk')}</span>
+                      </span>
+                    )}
+                    {filteredIntentsV2.filter(i => i.frontmatter.risk === 'medium').length > 0 && (
+                      <span className="risk-item risk-medium">
+                        <span className="risk-count">{filteredIntentsV2.filter(i => i.frontmatter.risk === 'medium').length}</span>
+                        <span className="risk-label">{t('mediumRisk')}</span>
+                      </span>
+                    )}
+                    {filteredIntentsV2.filter(i => i.frontmatter.risk === 'low').length > 0 && (
+                      <span className="risk-item risk-low">
+                        <span className="risk-count">{filteredIntentsV2.filter(i => i.frontmatter.risk === 'low').length}</span>
+                        <span className="risk-label">{t('lowRisk')}</span>
+                      </span>
+                    )}
+                  </div>
+                )}
+                {/* Branch Info */}
+                {diffContext && (
+                  <div className="project-overview-branch">
+                    <span className="branch-icon">⎇</span>
+                    <span className="branch-name">{diffContext.head}</span>
+                    {diffContext.owner && diffContext.repo && (
+                      <span className="branch-repo">{diffContext.owner}/{diffContext.repo}</span>
+                    )}
+                  </div>
+                )}
+              </div>
+              <button
+                className="story-mode-btn"
+                onClick={() => switchViewMode("story")}
+              >
+                📚 {t('viewStoryMode')}
+              </button>
+            </div>
+          </div>
+
           {/* Intent recap at top - like PR recap */}
           {filteredIntentsV2.map((intent, intentIdx) => (
             <div key={intentIdx} className="pr-recap intent-recap">
@@ -1264,13 +1225,16 @@ function App({ mode }: AppProps) {
 
             {/* Files Content - using unified DiffViewer */}
             <div className="files-content">
-              {filteredIntentsV2.map((intent, i) => (
+              {filteredIntentsV2.map((intent, i) => {
+                const intentChunks = intent.resolvedChunks.filter(c => c.resolved?.content);
+                return (
                 <div key={i} id={`intent-file-${i}`}>
                   <DiffViewer
                     filename={intent.frontmatter.files[0] || 'unknown'}
-                    resolvedChunks={intent.resolvedChunks.filter(c => c.resolved?.content)}
+                    resolvedChunks={intentChunks}
                     intentTitle={intent.title}
                     onLinkClick={handleLinkClick}
+                    expandChunkAnchor={expandChunkAnchor && intentChunks.some(c => c.anchor === expandChunkAnchor) ? expandChunkAnchor : undefined}
                     translations={{
                       new: t('new'), existing: t('existing'), context: t('context'), notInDiff: t('notInDiff'), modified: t('modified'),
                       deepDive: t('deepDive'), toastCopied: t('toastCopied'), toastError: t('toastError'),
@@ -1283,18 +1247,108 @@ function App({ mode }: AppProps) {
                     }}
                   />
                 </div>
-              ))}
+              );
+              })}
             </div>
           </main>
         </>
       )}
 
       {files.length === 0 && loading && (
-        <div className="loading">{t('loading')}</div>
+        <div className="loading-page">
+          <div className="loading-spinner"></div>
+          <div className="loading-text">
+            {loadingContext === "diff" && t('loadingDiff')}
+            {loadingContext === "browse" && t('loadingBrowse')}
+            {loadingContext === "story" && t('loadingStory')}
+            {loadingContext === "github-pr" && t('loadingPR')}
+            {loadingContext === "github-branches" && t('loadingBranches')}
+            {loadingContext === "github-browse" && t('loadingGitHubBrowse')}
+            {!loadingContext && t('loading')}
+          </div>
+          {diffContext?.owner && diffContext?.repo && (
+            <div className="loading-repo">{diffContext.owner}/{diffContext.repo}</div>
+          )}
+        </div>
       )}
 
       {filteredFiles.length > 0 && (
         <>
+      {/* Project Overview Header for Browse Mode */}
+      {viewMode === "browse" && filteredIntentsV2.length > 0 && (
+        <div className="project-overview">
+          <div className="project-overview-header">
+            <div className="project-overview-info">
+              <h2 className="project-overview-title">{t('projectOverview')}</h2>
+              <p className="project-overview-description">
+                {repoInfo?.description || filteredIntentsV2[0]?.summary || t('noDescription')}
+              </p>
+              <div className="project-overview-meta">
+                {repoInfo?.stars !== undefined && repoInfo.stars > 0 && (
+                  <span className="meta-item meta-stars">
+                    <span className="meta-icon-styled">★</span>
+                    <span className="meta-value">{repoInfo.stars.toLocaleString()}</span>
+                  </span>
+                )}
+                {repoInfo?.language && (
+                  <span className="meta-item meta-language">
+                    <span className="meta-dot"></span>
+                    <span className="meta-value">{repoInfo.language}</span>
+                  </span>
+                )}
+                <span className="meta-item meta-intents">
+                  <span className="meta-badge">{filteredIntentsV2.length}</span>
+                  <span className="meta-value">{t('intentsCount')}</span>
+                </span>
+                <span className="meta-item meta-files">
+                  <span className="meta-badge">{new Set(filteredIntentsV2.flatMap(i => i.frontmatter.files)).size}</span>
+                  <span className="meta-value">{t('filesDocumented')}</span>
+                </span>
+              </div>
+              {/* Risk Overview */}
+              {filteredIntentsV2.some(i => i.frontmatter.risk) && (
+                <div className="project-overview-risk">
+                  {filteredIntentsV2.filter(i => i.frontmatter.risk === 'high').length > 0 && (
+                    <span className="risk-item risk-high">
+                      <span className="risk-count">{filteredIntentsV2.filter(i => i.frontmatter.risk === 'high').length}</span>
+                      <span className="risk-label">{t('highRisk')}</span>
+                    </span>
+                  )}
+                  {filteredIntentsV2.filter(i => i.frontmatter.risk === 'medium').length > 0 && (
+                    <span className="risk-item risk-medium">
+                      <span className="risk-count">{filteredIntentsV2.filter(i => i.frontmatter.risk === 'medium').length}</span>
+                      <span className="risk-label">{t('mediumRisk')}</span>
+                    </span>
+                  )}
+                  {filteredIntentsV2.filter(i => i.frontmatter.risk === 'low').length > 0 && (
+                    <span className="risk-item risk-low">
+                      <span className="risk-count">{filteredIntentsV2.filter(i => i.frontmatter.risk === 'low').length}</span>
+                      <span className="risk-label">{t('lowRisk')}</span>
+                    </span>
+                  )}
+                </div>
+              )}
+              {/* Branch Info */}
+              {diffContext && (
+                <div className="project-overview-branch">
+                  <span className="branch-icon">⎇</span>
+                  <span className="branch-name">{diffContext.head}</span>
+                  {diffContext.owner && diffContext.repo && (
+                    <span className="branch-repo">{diffContext.owner}/{diffContext.repo}</span>
+                  )}
+                </div>
+              )}
+            </div>
+            <button
+              className="story-mode-btn"
+              onClick={() => switchViewMode("story")}
+            >
+              📚 {t('viewStoryMode')}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* No intent banner for PRs without documentation */}
       {filteredIntentsV2.length === 0 && (mode === "github-pr" || diffContext?.type === "github-pr") && (
         <div className="no-intent-banner">
@@ -1616,6 +1670,7 @@ function App({ mode }: AppProps) {
                   fullFileContent={file.fullFileContent}
                   resolvedChunks={fileChunks}
                   viewMode={viewMode === "story" ? "browse" : viewMode}
+                  expandChunkAnchor={expandChunkAnchor && fileChunks.some(c => c.anchor === expandChunkAnchor) ? expandChunkAnchor : undefined}
                   translations={{
                     new: t('new'), existing: t('existing'), context: t('context'), notInDiff: t('notInDiff'), modified: t('modified'),
                     deepDive: t('deepDive'), toastCopied: t('toastCopied'), toastError: t('toastError'),
