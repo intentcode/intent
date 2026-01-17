@@ -1,238 +1,25 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { parseIntent } from "./lib/parseIntent";
+import { useParams } from "react-router-dom";
 import { parseDiff } from "./lib/parseDiff";
-import type { IntentFile, Session } from "./lib/parseIntent";
-import type { DiffFile } from "./lib/parseDiff";
+import type { DiffFile, DiffHunk, DiffLine } from "./lib/parseDiff";
 import { DiffViewer } from "./components/DiffViewer";
 import { RepoSelector } from "./components/RepoSelector";
-import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, type DiffMode, type IntentV2API } from "./lib/api";
+import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, fetchGitHubBrowse, type DiffMode, type IntentV2API } from "./lib/api";
+import { getCurrentUser, loginWithGitHub, logout, type User } from "./lib/auth";
 import "./App.css";
 
-// ============ FILE 1: cleaner.py ============
-const intentCleaner = `# cleaner.py
+type AppMode = "home" | "github-pr" | "github-compare" | "github-browse";
 
-## 2024-01-11 14:30 | Ajout feature claude note
-
-### Recap
-**Objectif:** Sauvegarder le contexte des messages marqués "claude note" avant suppression
-**Risque:** Faible - Ajout pur, ne modifie pas la logique existante
-
-### Chunks
-
-#### L14-21 | Dataclass Note
-Structure pour stocker les notes capturées: timestamp, texte du marker, messages de contexte, flag thread.
-> Décision: Dataclass plutôt que dict pour la clarté et le typage
-@replaces L14-16 | Ancien dict non typé (NoteDict = dict) remplacé par une dataclass
-@link notes_writer.py#L1-5 | Importée ici pour sérialiser les notes en markdown
-@link config.py#L8-8 | Path utilise pathlib importé ici
-
-#### L46-46 | Initialisation liste notes
-Liste vide initialisée dans __init__ pour accumuler les notes pendant le cleanup.
-@link cleaner.py#L14-21 | Type Note utilisé pour le typage de la liste
-
-#### D14-16 | Suppression ancien système de notes
-L'ancien système utilisait un simple dict non typé. Supprimé car remplacé par la dataclass Note.
-> Décision: Le typing strict évite les bugs runtime
-@link cleaner.py#L14-21 | Remplacé par la dataclass Note
-
-#### L84-85 | Capture pendant le scan
-Appel de la méthode de capture pendant le scan existant des messages.
-> Décision: Pas de 2ème passe sur les messages, capture au fil de l'eau pour performance
-@replaces L81-83 | Suppression de l'ancien logging verbose (logger.debug)
-@link cleaner.py#L46-46 | Ajoute les notes à cette liste initialisée plus haut
-@link config.py#L14-15 | Utilise notes_marker pour détecter les messages
-
-#### D78-80 | Suppression logging debug
-Les logs debug étaient trop verbeux et polluaient les sorties en production.
-> Décision: Logging retiré, monitoring via métriques à la place
-
----
-`;
-
-const diffCleaner = `diff --git a/src/slack_cleaner/cleaner.py b/src/slack_cleaner/cleaner.py
---- a/src/slack_cleaner/cleaner.py
-+++ b/src/slack_cleaner/cleaner.py
-@@ -11,10 +11,15 @@ import httpx
-
- from .config import Settings
-
--# Old dict-based note storage (untyped)
--NoteDict = dict
--
-+@dataclass
-+class Note:
-+    """A saved note with context."""
-+    timestamp: datetime
-+    marker_text: str
-+    context: List[dict] = field(default_factory=list)
-+    is_thread: bool = False
-+
-
- class SlackCleaner:
-     """Cleans messages from a Slack conversation."""
-
-@@ -38,6 +43,7 @@ class SlackCleaner:
-             settings.user_b_id: settings.user_b_token,
-         }
-         self._read_token = settings.user_a_token
-+        self._notes: List[Note] = []
-
-     def clean(self) -> int:
-         """Clean messages older than retention_hours."""
-@@ -75,9 +81,9 @@ class SlackCleaner:
-                 if not messages:
-                     break
-
--                # Debug logging
--                logger.debug(f"Processing batch of {len(messages)} messages")
--                logger.debug(f"Oldest: {messages[-1].get('ts')}")
-+                # Capture notes from conversation
-+                self._capture_notes_from_messages(messages, is_thread=False)
-+
-                 for msg in messages:
-                     msg_ts = float(msg.get("ts", 0))
-`;
-
-// ============ FILE 2: config.py ============
-const intentConfig = `# config.py
-
-## 2024-01-11 14:30 | Ajout feature claude note
-
-### Recap
-**Objectif:** Ajouter la configuration pour le path de sauvegarde des notes
-**Risque:** Faible - Ajout d'un champ optionnel
-
-### Chunks
-
-#### L7-7 | Import Path
-Import de Path pour la gestion des chemins de fichiers.
-> Décision: Utiliser pathlib plutôt que os.path pour la modernité
-@replaces L7-8 | Suppression des imports os.path et os devenus inutiles
-@link notes_writer.py#L8-19 | NotesWriter utilise Path pour gérer le fichier de sortie
-
-#### D7-8 | Suppression imports legacy
-Les imports os.path et os ne sont plus nécessaires avec pathlib.
-> Décision: pathlib est plus moderne et cross-platform
-
-#### L14-15 | Config notes_path
-Nouveau champ optionnel pour spécifier où sauvegarder les notes extraites.
-> Décision: Optionnel avec default None pour ne pas casser les configs existantes
-@replaces L14-15 | Ancien output_dir et use_json supprimés
-@link cleaner.py#L14-21 | Configure où sauvegarder les objets Note
-@link notes_writer.py#L21-32 | Passé au writer pour l'écriture
-
-#### D14-15 | Suppression ancienne config
-output_dir et use_json supprimés car le nouveau système utilise notes_path avec format markdown.
-> Décision: Simplification de la config, un seul paramètre au lieu de deux
-
----
-`;
-
-const diffConfig = `diff --git a/src/slack_cleaner/config.py b/src/slack_cleaner/config.py
---- a/src/slack_cleaner/config.py
-+++ b/src/slack_cleaner/config.py
-@@ -5,9 +5,8 @@
- from typing import Optional
- from dataclasses import dataclass
--import os.path
--import os
-+from pathlib import Path
-
- @dataclass
- class Settings:
-@@ -12,6 +11,8 @@ class Settings:
-     user_b_id: str
-     user_b_token: str
-     retention_hours: int = 6
--    output_dir: str = "/tmp/slack_backup"
--    use_json: bool = True
-+    notes_path: Optional[Path] = None
-+    notes_marker: str = "claude note"
-`;
-
-// ============ FILE 3: notes_writer.py (nouveau fichier) ============
-const intentNotesWriter = `# notes_writer.py
-
-## 2024-01-11 14:30 | Ajout feature claude note
-
-### Recap
-**Objectif:** Module dédié à l'écriture des notes en markdown
-**Risque:** Faible - Nouveau fichier isolé
-
-### Chunks
-
-#### L1-5 | Imports et dépendances
-Imports nécessaires pour le writer: datetime, Path, et la dataclass Note.
-> Décision: Import de Note depuis cleaner.py pour éviter la duplication
-@link cleaner.py#L14-20 | Importe la dataclass Note définie ici
-
-#### L8-19 | Classe NotesWriter
-Classe responsable de la sérialisation des notes en markdown.
-> Décision: Classe séparée pour respecter Single Responsibility Principle
-> Décision: Format markdown pour lisibilité humaine
-@replaces cleaner.py#L120-145 | Logique d'écriture extraite du cleaner (était mélangée avec la logique de cleanup)
-@link config.py#L15-16 | Reçoit le path depuis la config notes_path
-
-#### L21-32 | Méthode write
-Écrit les notes dans le fichier avec formatage markdown structuré.
-> Décision: Append mode pour ne pas perdre les notes précédentes
-> Décision: Section datée pour faciliter la navigation
-@replaces cleaner.py#L130-140 | Ancien code écrivait en JSON, maintenant markdown pour lisibilité
-@link cleaner.py#L88-89 | Appelé après la capture des notes
-
----
-`;
-
-const diffNotesWriter = `diff --git a/src/slack_cleaner/notes_writer.py b/src/slack_cleaner/notes_writer.py
-new file mode 100644
---- /dev/null
-+++ b/src/slack_cleaner/notes_writer.py
-@@ -0,0 +1,35 @@
-+from datetime import datetime
-+from pathlib import Path
-+from typing import List
-+
-+from .cleaner import Note
-+
-+
-+class NotesWriter:
-+    """Writes captured notes to a markdown file."""
-+
-+    def __init__(self, output_path: Path):
-+        self.output_path = output_path
-+
-+    def _format_note(self, note: Note) -> str:
-+        lines = [f"### {note.timestamp.strftime('%H:%M')}"]
-+        for msg in note.context:
-+            lines.append(f"> {msg.get('text', '')}")
-+        lines.append(f"\\nMarker: {note.marker_text}")
-+        return "\\n".join(lines)
-+
-+    def write(self, notes: List[Note]) -> None:
-+        if not notes:
-+            return
-+
-+        content = [f"## {datetime.now().strftime('%Y-%m-%d')}\\n"]
-+        for note in notes:
-+            content.append(self._format_note(note))
-+            content.append("\\n---\\n")
-+
-+        with open(self.output_path, "a") as f:
-+            f.write("\\n".join(content))
-+
-+    def clear(self) -> None:
-+        self.output_path.unlink(missing_ok=True)
-`;
-
-interface FileData {
-  intent: IntentFile;
-  diff: DiffFile;
-  session: Session;
-  filename: string;
-  fullFileContent?: string; // For expand context feature
+interface AppProps {
+  mode?: AppMode;
 }
 
-type Mode = "demo" | "live";
+interface FileData {
+  diff: DiffFile;
+  filename: string;
+  fullFileContent?: string;
+}
+
 type Language = "en" | "fr" | "es" | "de";
 
 // Context to track what diff is being displayed
@@ -244,6 +31,81 @@ interface DiffContext {
   owner?: string;
   repo?: string;
   prNumber?: number;
+}
+
+// File tree node for hierarchical display
+interface TreeNode {
+  name: string;
+  path: string;
+  isFile: boolean;
+  isNew?: boolean;
+  children: TreeNode[];
+}
+
+// Build a tree structure from flat file paths
+function buildFileTree(files: FileData[]): TreeNode[] {
+  const root: TreeNode[] = [];
+
+  for (const file of files) {
+    const filePath = file.diff.newPath || file.diff.oldPath || file.filename;
+    // Skip files with empty paths
+    if (!filePath || filePath.trim() === '') continue;
+    const parts = filePath.split('/').filter(p => p.length > 0);
+    if (parts.length === 0) continue;
+    const isNew = file.diff?.oldPath === "/dev/null" || !file.diff?.oldPath;
+
+    let currentLevel = root;
+    let currentPath = '';
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      const isFile = i === parts.length - 1;
+
+      let existing = currentLevel.find(n => n.name === part);
+      if (!existing) {
+        existing = {
+          name: part,
+          path: currentPath,
+          isFile,
+          isNew: isFile ? isNew : undefined,
+          children: [],
+        };
+        currentLevel.push(existing);
+      }
+      currentLevel = existing.children;
+    }
+  }
+
+  // Collapse folders with single folder child (e.g., src/components -> src/components)
+  const collapseNodes = (nodes: TreeNode[]): TreeNode[] => {
+    return nodes.map(node => {
+      if (!node.isFile) {
+        // Recursively collapse children first
+        node.children = collapseNodes(node.children);
+        // If this folder has exactly one child and it's a folder, collapse them
+        while (node.children.length === 1 && !node.children[0].isFile) {
+          const child = node.children[0];
+          node.name = `${node.name}/${child.name}`;
+          node.path = child.path;
+          node.children = child.children;
+        }
+      }
+      return node;
+    });
+  };
+
+  // Sort: folders first, then files, alphabetically
+  const sortNodes = (nodes: TreeNode[]): TreeNode[] => {
+    return nodes
+      .map(n => ({ ...n, children: sortNodes(n.children) }))
+      .sort((a, b) => {
+        if (a.isFile !== b.isFile) return a.isFile ? 1 : -1;
+        return a.name.localeCompare(b.name);
+      });
+  };
+
+  return sortNodes(collapseNodes(root));
 }
 
 const LANGUAGES: { code: Language; label: string }[] = [
@@ -267,7 +129,10 @@ const TRANSLATIONS: Record<Language, Record<string, string>> = {
     modifiedFiles: "Modified files",
     warning: "Warning:",
     staleWarning: "Some chunks have been modified since last update.",
+    obsoleteWarning: "Some chunks reference code that no longer exists.",
     modified: "Modified",
+    obsolete: "Obsolete",
+    stale: "Stale",
     noChanges: "No changes found",
     selectRepo: "Select a repository",
     loading: "Loading...",
@@ -294,6 +159,19 @@ const TRANSLATIONS: Record<Language, Record<string, string>> = {
     promptQuestion: "My question",
     promptQuestionPlaceholder: "[Explain why this code is structured this way / What alternatives could have been used / I don't understand part X]",
     deepDiveTooltip: "Copy context to explore this chunk with Claude",
+    storyMode: "Story Mode",
+    storyModeDesc: "Read intents as a narrative",
+    exitStoryMode: "Exit Story Mode",
+    chapter: "Chapter",
+    noIntentsForStory: "No intents to display in story mode",
+    showIntentFiles: "Show .intent",
+    hideIntentFiles: "Hide .intent",
+    expandAll: "Expand all folders",
+    collapseAll: "Collapse all folders",
+    noIntentTitle: "No intent documentation for this PR",
+    noIntentDesc: "This PR doesn't have intent documentation yet. Intents help reviewers understand the 'why' behind code changes.",
+    noIntentHint: "Intents are recommended for features, refactoring, and complex bug fixes. Small fixes and dependency updates usually don't need them.",
+    createIntent: "Learn how to create intents",
   },
   fr: {
     new: "Nouveau",
@@ -307,6 +185,9 @@ const TRANSLATIONS: Record<Language, Record<string, string>> = {
     modifiedFiles: "Fichiers modifiés",
     warning: "Attention:",
     staleWarning: "Certains chunks ont été modifiés depuis la dernière mise à jour.",
+    obsoleteWarning: "Certains chunks référencent du code qui n'existe plus.",
+    obsolete: "Obsolète",
+    stale: "Modifié",
     modified: "Modifié",
     noChanges: "Aucun changement trouvé",
     selectRepo: "Sélectionner un dépôt",
@@ -334,6 +215,19 @@ const TRANSLATIONS: Record<Language, Record<string, string>> = {
     promptQuestion: "Ma question",
     promptQuestionPlaceholder: "[Explique-moi pourquoi ce code est structuré ainsi / Quelles alternatives auraient été possibles / Je ne comprends pas la partie X]",
     deepDiveTooltip: "Copier le contexte pour explorer ce chunk avec Claude",
+    storyMode: "Mode Récit",
+    storyModeDesc: "Lire les intents comme un récit",
+    exitStoryMode: "Quitter le mode récit",
+    chapter: "Chapitre",
+    noIntentsForStory: "Aucun intent à afficher en mode récit",
+    showIntentFiles: "Afficher .intent",
+    hideIntentFiles: "Masquer .intent",
+    expandAll: "Déplier tous les dossiers",
+    collapseAll: "Replier tous les dossiers",
+    noIntentTitle: "Pas de documentation intent pour cette PR",
+    noIntentDesc: "Cette PR n'a pas encore de documentation intent. Les intents aident les reviewers à comprendre le 'pourquoi' des changements.",
+    noIntentHint: "Les intents sont recommandés pour les features, refactoring et bugs complexes. Les petits fixes et mises à jour de dépendances n'en ont généralement pas besoin.",
+    createIntent: "Apprendre à créer des intents",
   },
   es: {
     new: "Nuevo",
@@ -379,45 +273,275 @@ const TRANSLATIONS: Record<Language, Record<string, string>> = {
   },
 };
 
-type ViewMode = "diff" | "browse";
+type ViewMode = "diff" | "browse" | "story";
 
-function App() {
+function App({ mode }: AppProps) {
+  const params = useParams<{ owner?: string; repo?: string; prNumber?: string; base?: string; head?: string; branch?: string }>();
   const [files, setFiles] = useState<FileData[]>([]);
   const [intentsV2, setIntentsV2] = useState<IntentV2API[]>([]);
   const [changedFiles, setChangedFiles] = useState<string[]>([]);
-  const [mode] = useState<Mode>("live");
-  void mode; // used for mode-based logic elsewhere
+  const [allFileContents, setAllFileContents] = useState<Record<string, string>>({});
   const [viewMode, setViewMode] = useState<ViewMode>("diff");
   const [lang, setLang] = useState<Language>("en");
+  const [selectedIntentId, setSelectedIntentId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diffRequested, setDiffRequested] = useState(false);
   const [diffContext, setDiffContext] = useState<DiffContext | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [hideIntentFiles, setHideIntentFiles] = useState(true);
+  const [user, setUser] = useState<User | null>(null);
   const lastLoadParamsRef = useRef<{repoPath: string; diffMode: DiffMode; base: string; head: string} | null>(null);
+  const lastBrowseParamsRef = useRef<{repoPath: string; branch: string} | null>(null);
+  const lastGitHubPRRef = useRef<{owner: string; repo: string; prNumber: number} | null>(null);
+  const lastGitHubBranchesRef = useRef<{owner: string; repo: string; base: string; head: string} | null>(null);
+  const lastGitHubBrowseRef = useRef<{owner: string; repo: string; branch: string} | null>(null);
   const isFirstRender = useRef(true);
+  const urlLoadedRef = useRef(false);
+
+  // Toggle folder expansion
+  const toggleFolder = (path: string) => {
+    setExpandedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  };
+
+  // Expand all folders
+  const expandAllFolders = (tree: TreeNode[]) => {
+    const paths = new Set<string>();
+    const collectPaths = (nodes: TreeNode[]) => {
+      for (const node of nodes) {
+        if (!node.isFile) {
+          paths.add(node.path);
+          collectPaths(node.children);
+        }
+      }
+    };
+    collectPaths(tree);
+    setExpandedFolders(paths);
+  };
+
+  // Collapse all folders
+  const collapseAllFolders = () => {
+    setExpandedFolders(new Set());
+  };
+
+  // Auto-expand all folders when files change
+  useEffect(() => {
+    if (files.length > 0) {
+      const tree = buildFileTree(files);
+      expandAllFolders(tree);
+    }
+  }, [files]);
+
+  // Fetch current user on mount
+  useEffect(() => {
+    getCurrentUser().then(setUser);
+  }, []);
+
+  // Auto-load from URL params
+  useEffect(() => {
+    if (urlLoadedRef.current) return;
+
+    const { owner, repo, prNumber, base, head, branch } = params;
+
+    if (mode === "github-pr" && owner && repo && prNumber) {
+      urlLoadedRef.current = true;
+      loadFromGitHub(owner, repo, parseInt(prNumber, 10));
+    } else if (mode === "github-compare" && owner && repo && base && head) {
+      urlLoadedRef.current = true;
+      loadFromGitHubBranches(owner, repo, base, head);
+    } else if (mode === "github-browse" && owner && repo) {
+      urlLoadedRef.current = true;
+      loadFromGitHubBrowse(owner, repo, branch || "main");
+    }
+  }, [mode, params]);
 
   // Translation helper
   const t = (key: string) => TRANSLATIONS[lang]?.[key] || TRANSLATIONS.en[key] || key;
 
-  // Filter intents to only show those with chunks in changed files
-  // In browse mode, show all intents
+  // Helper: check if any line in a range is visible in the diff hunks
+  const isRangeInDiff = (filePath: string, startLine: number, endLine: number): boolean => {
+    const file = files.find(f => {
+      const fp = f.diff?.newPath || f.diff?.oldPath || f.filename || '';
+      return fp === filePath || fp.endsWith('/' + filePath) || filePath.endsWith('/' + fp);
+    });
+    if (!file || !file.diff?.hunks) return false;
+
+    // Check if any line in the range is in any hunk
+    for (const hunk of file.diff.hunks) {
+      if (!hunk.lines || !Array.isArray(hunk.lines)) continue;
+      for (const line of hunk.lines) {
+        if (line.type !== 'remove' && line.newLineNumber !== undefined) {
+          if (line.newLineNumber >= startLine && line.newLineNumber <= endLine) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  // Filter intents and mark chunks as in-diff or context
+  // Show intent if it has at least one chunk in the diff
+  // Keep ALL chunks of that intent (for context display)
   const filteredIntentsV2 = useMemo(() => {
     // In browse mode, show all intents without filtering
     if (viewMode === "browse") return intentsV2;
-
-    if (changedFiles.length === 0) return intentsV2;
+    if (files.length === 0) return intentsV2;
 
     return intentsV2.filter(intent => {
-      // Check if any chunk in this intent resolves to a file in the diff
+      // Check if at least one chunk is in the diff
       return intent.resolvedChunks.some(chunk => {
-        if (!chunk.resolvedFile) return false;
-        // Check if resolvedFile matches any changed file
-        return changedFiles.some(changed =>
-          changed.includes(chunk.resolvedFile!) || chunk.resolvedFile!.includes(changed)
-        );
+        if (!chunk.resolved || !chunk.resolvedFile) return false;
+        return isRangeInDiff(chunk.resolvedFile, chunk.resolved.startLine, chunk.resolved.endLine);
       });
     });
-  }, [intentsV2, changedFiles, viewMode]);
+  }, [intentsV2, files, viewMode]);
+
+  // Create virtual hunks for context chunks (chunks not in diff but intent is shown)
+  const virtualHunksMap = useMemo(() => {
+    const CONTEXT_LINES = 10; // Lines of context before/after chunk
+    const virtualHunks: Record<string, DiffHunk[]> = {};
+
+    if (viewMode === "browse") return virtualHunks;
+
+    for (const intent of filteredIntentsV2) {
+      for (const chunk of intent.resolvedChunks) {
+        if (!chunk.resolved || !chunk.resolvedFile) continue;
+
+        // Check if this chunk is NOT in the diff (context chunk)
+        const inDiff = isRangeInDiff(chunk.resolvedFile, chunk.resolved.startLine, chunk.resolved.endLine);
+        if (inDiff) continue; // Skip chunks that are already in the diff
+
+        // Get file content to create virtual hunk
+        const fileContent = allFileContents[chunk.resolvedFile];
+        if (!fileContent) continue;
+
+        const fileLines = fileContent.split('\n');
+        const { startLine, endLine } = chunk.resolved;
+
+        // Calculate context range
+        const contextStart = Math.max(1, startLine - CONTEXT_LINES);
+        const contextEnd = Math.min(fileLines.length, endLine + CONTEXT_LINES);
+
+        // Create virtual hunk lines
+        const hunkLines: DiffLine[] = [];
+
+        // Header line
+        const hunkHeader = `@@ -${contextStart},${contextEnd - contextStart + 1} +${contextStart},${contextEnd - contextStart + 1} @@ (context for ${chunk.title || chunk.anchor})`;
+        hunkLines.push({ type: "header", content: hunkHeader });
+
+        // Add lines as context (no +/-)
+        for (let i = contextStart; i <= contextEnd; i++) {
+          const lineContent = fileLines[i - 1] || '';
+          hunkLines.push({
+            type: "context",
+            content: lineContent,
+            oldLineNumber: i,
+            newLineNumber: i,
+          });
+        }
+
+        // Create the virtual hunk
+        const virtualHunk: DiffHunk = {
+          header: hunkHeader,
+          startLineOld: contextStart,
+          startLineNew: contextStart,
+          lines: hunkLines,
+          isVirtual: true, // Mark as virtual for styling
+          chunkAnchor: chunk.anchor, // Reference to the chunk
+        };
+
+        // Add to the map
+        if (!virtualHunks[chunk.resolvedFile]) {
+          virtualHunks[chunk.resolvedFile] = [];
+        }
+        virtualHunks[chunk.resolvedFile].push(virtualHunk);
+      }
+    }
+
+    return virtualHunks;
+  }, [filteredIntentsV2, allFileContents, viewMode]);
+
+  // Merge virtual hunks into files (without mutating original state)
+  const filesWithVirtualHunks = useMemo((): FileData[] => {
+    if (viewMode === "browse") return files;
+    if (Object.keys(virtualHunksMap).length === 0) return files;
+
+    const existingFilePaths = new Set(files.map(f => f.diff?.newPath || f.diff?.oldPath || f.filename));
+
+    // Create new array with merged hunks
+    const result: FileData[] = files.map(file => {
+      const fp = file.diff?.newPath || file.diff?.oldPath || file.filename || '';
+
+      // Find matching virtual hunks for this file
+      const matchingVirtualHunks = Object.entries(virtualHunksMap).find(([vhPath]) =>
+        vhPath === fp || vhPath.endsWith('/' + fp) || fp.endsWith('/' + vhPath)
+      );
+
+      if (matchingVirtualHunks && file.diff) {
+        const [, vhunks] = matchingVirtualHunks;
+        const allHunks = [...file.diff.hunks, ...vhunks];
+        allHunks.sort((a, b) => a.startLineNew - b.startLineNew);
+
+        return {
+          ...file,
+          diff: {
+            ...file.diff,
+            hunks: allHunks,
+          },
+        };
+      }
+      return file;
+    });
+
+    // Add new files for virtual hunks that don't have existing files
+    for (const [filePath, virtualHunks] of Object.entries(virtualHunksMap)) {
+      const hasExistingFile = files.some(f => {
+        const fp = f.diff?.newPath || f.diff?.oldPath || f.filename || '';
+        return fp === filePath || fp.endsWith('/' + filePath) || filePath.endsWith('/' + fp);
+      });
+
+      if (!hasExistingFile && !existingFilePaths.has(filePath)) {
+        const fileContent = allFileContents[filePath];
+        result.push({
+          diff: {
+            oldPath: filePath,
+            newPath: filePath,
+            hunks: virtualHunks,
+          },
+          filename: filePath.split('/').pop() || filePath,
+          fullFileContent: fileContent,
+        });
+      }
+    }
+
+    return result;
+  }, [files, virtualHunksMap, allFileContents, viewMode]);
+
+  // Get the currently selected intent
+  const selectedIntent = useMemo(() => {
+    if (!selectedIntentId) return null;
+    return filteredIntentsV2.find(i => i.frontmatter.id === selectedIntentId) || null;
+  }, [selectedIntentId, filteredIntentsV2]);
+
+  // Filter out .intent/ files from the file list when hideIntentFiles is true
+  // Use filesWithVirtualHunks to include context chunks
+  const filteredFiles = useMemo(() => {
+    const sourceFiles = filesWithVirtualHunks;
+    if (!hideIntentFiles) return sourceFiles;
+    return sourceFiles.filter(file => {
+      const filePath = file.diff?.newPath || file.diff?.oldPath || file.filename || '';
+      return !filePath.startsWith('.intent/') && !filePath.includes('/.intent/');
+    });
+  }, [filesWithVirtualHunks, hideIntentFiles]);
 
   // Reload when language changes
   useEffect(() => {
@@ -427,39 +551,41 @@ function App() {
       return;
     }
 
-    const params = lastLoadParamsRef.current;
-    if (params && !loading) {
-      const { repoPath, diffMode, base, head } = params;
+    if (loading) return;
+
+    console.log('[Lang change] lang:', lang, 'viewMode:', viewMode, 'refs:', {
+      browse: lastBrowseParamsRef.current,
+      githubPR: lastGitHubPRRef.current,
+      githubBranches: lastGitHubBranchesRef.current,
+      githubBrowse: lastGitHubBrowseRef.current,
+      load: lastLoadParamsRef.current
+    });
+
+    // Reload based on current mode - check GitHub refs first as they're more specific
+    if (lastGitHubPRRef.current) {
+      console.log('[Lang change] Reloading GitHub PR with lang:', lang);
+      const { owner, repo, prNumber } = lastGitHubPRRef.current;
+      loadFromGitHub(owner, repo, prNumber, lang);
+    } else if (lastGitHubBranchesRef.current) {
+      console.log('[Lang change] Reloading GitHub branches with lang:', lang);
+      const { owner, repo, base, head } = lastGitHubBranchesRef.current;
+      loadFromGitHubBranches(owner, repo, base, head, lang);
+    } else if (lastGitHubBrowseRef.current) {
+      console.log('[Lang change] Reloading GitHub browse with lang:', lang);
+      const { owner, repo, branch } = lastGitHubBrowseRef.current;
+      loadFromGitHubBrowse(owner, repo, branch, lang);
+    } else if (viewMode === "story" && lastBrowseParamsRef.current) {
+      const { repoPath, branch } = lastBrowseParamsRef.current;
+      loadStory(repoPath, branch, lang);
+    } else if (viewMode === "browse" && lastBrowseParamsRef.current) {
+      const { repoPath, branch } = lastBrowseParamsRef.current;
+      loadBrowse(repoPath, branch, lang);
+    } else if (lastLoadParamsRef.current) {
+      const { repoPath, diffMode, base, head } = lastLoadParamsRef.current;
       loadFromRepo(repoPath, diffMode, base, head, lang);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lang]);
-
-  // Load demo data
-  const loadDemoData = () => {
-    const fileConfigs = [
-      { intent: intentCleaner, diff: diffCleaner },
-      { intent: intentConfig, diff: diffConfig },
-      { intent: intentNotesWriter, diff: diffNotesWriter },
-    ];
-
-    const parsed = fileConfigs.map(({ intent, diff }) => {
-      const parsedIntent = parseIntent(intent);
-      const parsedDiff = parseDiff(diff);
-      const filename = parsedDiff[0]?.newPath || parsedDiff[0]?.oldPath || parsedIntent.filename;
-      return {
-        intent: parsedIntent,
-        diff: parsedDiff[0],
-        session: parsedIntent.sessions[0],
-        filename: filename.split("/").pop() || filename,
-      };
-    });
-
-    setFiles(parsed);
-    setIntentsV2([]); // Clear v2 intents in demo mode
-    setDiffRequested(false);
-    setDiffContext(null); // Clear diff context in demo mode
-  };
 
   // Load from git repo
   const loadFromRepo = async (repoPath: string, diffMode: DiffMode, base: string, head: string, langOverride?: Language) => {
@@ -472,7 +598,12 @@ function App() {
       head,
       repoPath,
     });
+    // Clear other refs to prevent conflicts on lang change
     lastLoadParamsRef.current = { repoPath, diffMode, base, head };
+    lastGitHubPRRef.current = null;
+    lastGitHubBranchesRef.current = null;
+    lastGitHubBrowseRef.current = null;
+    lastBrowseParamsRef.current = null;
 
     try {
       // Pass language for intent file lookup (en is base, others have suffix)
@@ -484,35 +615,15 @@ function App() {
       // Store v2 intents and changed files
       setIntentsV2(response.intentsV2 || []);
       setChangedFiles(response.changedFiles || []);
+      setAllFileContents(response.fileContents || {});
 
       const parsed: FileData[] = diffFiles.map((diffFile) => {
         const filePath = diffFile.newPath || diffFile.oldPath || "";
         const filename = filePath.split("/").pop() || filePath;
-        const intentContent = response.intents[filePath];
         const fullFileContent = response.fileContents?.[filePath];
 
-        let intent: IntentFile;
-        let session: Session;
-
-        if (intentContent) {
-          intent = parseIntent(intentContent);
-          session = intent.sessions[0];
-        } else {
-          // Create empty intent/session for files without intent.md
-          intent = { filename, sessions: [] };
-          session = {
-            date: "",
-            title: "No intent file",
-            objective: "",
-            risk: "",
-            chunks: [],
-          };
-        }
-
         return {
-          intent,
           diff: diffFile,
-          session,
           filename,
           fullFileContent,
         };
@@ -538,6 +649,12 @@ function App() {
       repoPath,
     });
     setViewMode("browse"); // Set view mode to browse
+    // Clear other refs to prevent conflicts on lang change
+    lastBrowseParamsRef.current = { repoPath, branch };
+    lastGitHubPRRef.current = null;
+    lastGitHubBranchesRef.current = null;
+    lastGitHubBrowseRef.current = null;
+    lastLoadParamsRef.current = null;
 
     try {
       const currentLang = langOverride ?? lang;
@@ -553,16 +670,6 @@ function App() {
         const filename = filePath.split("/").pop() || filePath;
         const fullFileContent = response.fileContents?.[filePath];
 
-        // Create empty intent/session for files
-        const intent: IntentFile = { filename, sessions: [] };
-        const session: Session = {
-          date: "",
-          title: `${branch}`,
-          objective: `Browsing ${filePath}`,
-          risk: "",
-          chunks: [],
-        };
-
         // Create a fake diff file with no hunks (browse mode)
         const diff: DiffFile = {
           oldPath: filePath,
@@ -571,9 +678,7 @@ function App() {
         };
 
         return {
-          intent,
           diff,
-          session,
           filename,
           fullFileContent,
         };
@@ -587,8 +692,42 @@ function App() {
     }
   };
 
+  // Load story mode - view intents only as a narrative
+  const loadStory = async (repoPath: string, branch: string, langOverride?: Language) => {
+    setLoading(true);
+    setError(null);
+    setDiffRequested(true);
+    setDiffContext({
+      type: "browse", // Uses same context type as browse
+      head: branch,
+      repoPath,
+    });
+    setViewMode("story"); // Set view mode to story
+    // Clear other refs to prevent conflicts on lang change
+    lastBrowseParamsRef.current = { repoPath, branch };
+    lastGitHubPRRef.current = null;
+    lastGitHubBranchesRef.current = null;
+    lastGitHubBrowseRef.current = null;
+    lastLoadParamsRef.current = null;
+
+    try {
+      const currentLang = langOverride ?? lang;
+      const langParam = currentLang === "en" ? undefined : currentLang;
+      const response = await fetchBrowse(repoPath, branch, langParam);
+
+      // Store v2 intents only - we don't need files for story mode
+      setIntentsV2(response.intentsV2 || []);
+      setChangedFiles([]);
+      setFiles([]); // No files needed for story mode
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load story");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Load from GitHub PR
-  const loadFromGitHub = async (owner: string, repo: string, prNumber: number) => {
+  const loadFromGitHub = async (owner: string, repo: string, prNumber: number, langOverride?: Language) => {
     setLoading(true);
     setError(null);
     setDiffRequested(true);
@@ -598,34 +737,36 @@ function App() {
       repo,
       prNumber,
     });
+    // Clear other refs to prevent conflicts on lang change
+    lastGitHubPRRef.current = { owner, repo, prNumber };
+    lastGitHubBranchesRef.current = null;
+    lastGitHubBrowseRef.current = null;
+    lastLoadParamsRef.current = null;
+    lastBrowseParamsRef.current = null;
 
     try {
-      const response = await fetchGitHubPR(owner, repo, prNumber);
+      const currentLang = langOverride ?? lang;
+      const langParam = currentLang === "en" ? undefined : currentLang;
+      console.log('[loadFromGitHub] Fetching with lang:', langParam, 'currentLang:', currentLang);
+      const response = await fetchGitHubPR(owner, repo, prNumber, langParam);
       const diffFiles = parseDiff(response.diff);
 
       const parsed: FileData[] = diffFiles.map((diffFile) => {
         const filePath = diffFile.newPath || diffFile.oldPath || "";
         const filename = filePath.split("/").pop() || filePath;
-
-        // Create session from PR info
-        const intent: IntentFile = { filename, sessions: [] };
-        const session: Session = {
-          date: new Date().toISOString().split("T")[0],
-          title: response.prInfo.title,
-          objective: `PR #${response.prInfo.number} by ${response.prInfo.author}`,
-          risk: `${response.prInfo.base} ← ${response.prInfo.head}`,
-          chunks: [],
-        };
+        const fullFileContent = response.fileContents?.[filePath];
 
         return {
-          intent,
           diff: diffFile,
-          session,
           filename,
+          fullFileContent,
         };
       });
 
       setFiles(parsed);
+      setIntentsV2(response.intentsV2 || []);
+      setChangedFiles(response.changedFiles || []);
+      setAllFileContents(response.fileContents || {});
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load GitHub PR");
     } finally {
@@ -634,7 +775,7 @@ function App() {
   };
 
   // Load from GitHub branches comparison
-  const loadFromGitHubBranches = async (owner: string, repo: string, base: string, head: string) => {
+  const loadFromGitHubBranches = async (owner: string, repo: string, base: string, head: string, langOverride?: Language) => {
     setLoading(true);
     setError(null);
     setDiffRequested(true);
@@ -645,34 +786,33 @@ function App() {
       owner,
       repo,
     });
+    // Clear other refs to prevent conflicts on lang change
+    lastGitHubBranchesRef.current = { owner, repo, base, head };
+    lastGitHubPRRef.current = null;
+    lastGitHubBrowseRef.current = null;
+    lastLoadParamsRef.current = null;
+    lastBrowseParamsRef.current = null;
 
     try {
-      const response = await fetchGitHubBranchesDiff(owner, repo, base, head);
+      const currentLang = langOverride ?? lang;
+      const langParam = currentLang === "en" ? undefined : currentLang;
+      const response = await fetchGitHubBranchesDiff(owner, repo, base, head, langParam);
       const diffFiles = parseDiff(response.diff);
 
       // Store v2 intents and changed files
       setIntentsV2(response.intentsV2 || []);
       setChangedFiles(response.changedFiles || []);
+      setAllFileContents(response.fileContents || {});
 
       const parsed: FileData[] = diffFiles.map((diffFile) => {
         const filePath = diffFile.newPath || diffFile.oldPath || "";
         const filename = filePath.split("/").pop() || filePath;
-
-        // Create session from branch comparison info
-        const intent: IntentFile = { filename, sessions: [] };
-        const session: Session = {
-          date: new Date().toISOString().split("T")[0],
-          title: `${owner}/${repo}`,
-          objective: `Comparing ${base}...${head}`,
-          risk: response.branchInfo ? `${response.branchInfo.totalCommits} commits` : "",
-          chunks: [],
-        };
+        const fullFileContent = response.fileContents?.[filePath];
 
         return {
-          intent,
           diff: diffFile,
-          session,
           filename,
+          fullFileContent,
         };
       });
 
@@ -684,11 +824,60 @@ function App() {
     }
   };
 
-  useEffect(() => {
-    if (mode === "demo") {
-      loadDemoData();
+  // Load from GitHub browse mode (view a single branch with intents)
+  const loadFromGitHubBrowse = async (owner: string, repo: string, branch: string, langOverride?: Language) => {
+    setLoading(true);
+    setError(null);
+    setDiffRequested(true);
+    setDiffContext({
+      type: "browse",
+      head: branch,
+      owner,
+      repo,
+    });
+    // Clear other refs to prevent conflicts on lang change
+    lastGitHubBrowseRef.current = { owner, repo, branch };
+    lastGitHubPRRef.current = null;
+    lastGitHubBranchesRef.current = null;
+    lastLoadParamsRef.current = null;
+    lastBrowseParamsRef.current = null;
+    setViewMode("browse");
+
+    try {
+      const currentLang = langOverride ?? lang;
+      const langParam = currentLang === "en" ? undefined : currentLang;
+      const response = await fetchGitHubBrowse(owner, repo, branch, langParam);
+
+      // Store v2 intents
+      setIntentsV2(response.intentsV2 || []);
+      setChangedFiles(response.files || []);
+
+      // Create file data for each file in intents
+      const parsed: FileData[] = response.files.map((filePath) => {
+        const filename = filePath.split("/").pop() || filePath;
+        const fullFileContent = response.fileContents?.[filePath];
+
+        // Create a fake diff file with no hunks (browse mode)
+        const diff: DiffFile = {
+          oldPath: filePath,
+          newPath: filePath,
+          hunks: [],
+        };
+
+        return {
+          diff,
+          filename,
+          fullFileContent,
+        };
+      });
+
+      setFiles(parsed);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to browse GitHub repository");
+    } finally {
+      setLoading(false);
     }
-  }, [mode]);
+  };
 
   const handleLinkClick = (targetFile: string, targetRange: string) => {
     // Find the target element and scroll to it
@@ -700,9 +889,6 @@ function App() {
       setTimeout(() => element.classList.remove("chunk-highlight"), 2000);
     }
   };
-
-  // Get the session info from the first file (they share the same PR info)
-  const prSession = files.length > 0 ? files[0].session : null;
 
   // Helper to render the diff context info
   const renderDiffContextBadge = () => {
@@ -757,47 +943,202 @@ function App() {
     );
   };
 
+  // Get GitHub URL from current context
+  const getGitHubUrl = () => {
+    if (!diffContext) return null;
+    const { owner, repo, prNumber, base, head } = diffContext;
+    if (owner && repo) {
+      if (prNumber) {
+        return `https://github.com/${owner}/${repo}/pull/${prNumber}`;
+      }
+      if (base && head) {
+        return `https://github.com/${owner}/${repo}/compare/${base}...${head}`;
+      }
+      return `https://github.com/${owner}/${repo}`;
+    }
+    return null;
+  };
+
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Intent</h1>
+        <div className="header-left">
+          <a href="/home" className="header-logo">
+            <img src="/intent_logo.png" alt="Intent" className="logo-icon" />
+            <h1>Intent</h1>
+          </a>
+          {mode !== "home" && (
+            <a href="/home" className="nav-home-link">
+              ← Home
+            </a>
+          )}
+        </div>
         <span className="tagline">Intent-based code review</span>
-        <div className="lang-selector">
-          {LANGUAGES.map((l) => (
-            <button
-              key={l.code}
-              className={lang === l.code ? "active" : ""}
-              onClick={() => setLang(l.code)}
+        <div className="header-right">
+          {getGitHubUrl() && (
+            <a
+              href={getGitHubUrl()!}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="github-link"
             >
-              {l.label}
-            </button>
-          ))}
+              View on GitHub ↗
+            </a>
+          )}
+          <div className="lang-selector">
+            {LANGUAGES.map((l) => (
+              <button
+                key={l.code}
+                className={lang === l.code ? "active" : ""}
+                onClick={() => setLang(l.code)}
+              >
+                {l.label}
+              </button>
+            ))}
+          </div>
+          <div className="auth-section">
+            {user ? (
+              <div className="user-menu">
+                <img src={user.avatar} alt={user.login} className="user-avatar" />
+                <span className="user-name">{user.login}</span>
+                <button onClick={logout} className="logout-btn">Logout</button>
+              </div>
+            ) : (
+              <button onClick={() => loginWithGitHub(window.location.pathname)} className="login-btn">
+                Login with GitHub
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
-      {mode === "live" && (
+      {/* Only show RepoSelector in home mode */}
+      {mode === "home" && (
         <RepoSelector
           onLoadLocal={loadFromRepo}
           onLoadBrowse={loadBrowse}
+          onLoadStory={loadStory}
           onLoadGitHub={loadFromGitHub}
           onLoadGitHubBranches={loadFromGitHubBranches}
           loading={loading}
           error={error}
           defaultPath="/Users/berengerouadi/WorkingLab/personal/slack-cleaner"
-          defaultMode="branches"
           defaultBase="main"
           defaultHead="feat/add-intents"
+          localOnly={true}
         />
       )}
 
       {/* Show diff context badge when a diff was requested */}
-      {mode === "live" && diffContext && !loading && (
+      {diffContext && !loading && viewMode !== "story" && (
         <div className="diff-context-container">
           {renderDiffContextBadge()}
         </div>
       )}
 
-      {files.length === 0 && mode === "live" && !loading && !diffRequested && (
+      {/* Story Mode - Full page narrative view */}
+      {viewMode === "story" && !loading && diffRequested && !error && (
+        <div className="story-mode-page">
+          <div className="story-header">
+            <div className="story-header-left">
+              <h2 className="story-title">📚 {t('storyMode')}</h2>
+              <span className="story-context">
+                {diffContext?.repoPath?.split('/').pop()} • {diffContext?.head}
+              </span>
+            </div>
+            <button
+              className="story-exit-btn"
+              onClick={() => {
+                if (lastBrowseParamsRef.current) {
+                  loadBrowse(lastBrowseParamsRef.current.repoPath, lastBrowseParamsRef.current.branch, lang);
+                }
+              }}
+            >
+              {t('exitStoryMode')}
+            </button>
+          </div>
+
+          {filteredIntentsV2.length === 0 ? (
+            <div className="story-empty">
+              <div className="story-empty-icon">📭</div>
+              <p>{t('noIntentsForStory')}</p>
+            </div>
+          ) : (
+            <div className="story-content">
+              {filteredIntentsV2.map((intent, idx) => (
+                <article key={intent.frontmatter.id} className="story-chapter">
+                  <div className="chapter-header">
+                    <span className="chapter-number">{t('chapter')} {idx + 1}</span>
+                    <div className="chapter-meta">
+                      <span className="chapter-id">#{intent.frontmatter.id}</span>
+                      {intent.frontmatter.risk && (
+                        <span className={`risk-badge risk-${intent.frontmatter.risk}`}>
+                          {intent.frontmatter.risk}
+                        </span>
+                      )}
+                      {intent.frontmatter.date && (
+                        <span className="chapter-date">{intent.frontmatter.date}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <h3 className="chapter-title">{intent.title}</h3>
+
+                  {intent.summary && (
+                    <div className="chapter-summary">
+                      <p>{intent.summary}</p>
+                    </div>
+                  )}
+
+                  {intent.motivation && (
+                    <div className="chapter-motivation">
+                      <h4>{t('motivation')}</h4>
+                      <p>{intent.motivation}</p>
+                    </div>
+                  )}
+
+                  {intent.frontmatter.tags && intent.frontmatter.tags.length > 0 && (
+                    <div className="chapter-tags">
+                      {intent.frontmatter.tags.map((tag, i) => (
+                        <span key={i} className="tag-pill">{tag}</span>
+                      ))}
+                    </div>
+                  )}
+
+                  {intent.resolvedChunks.length > 0 && (
+                    <div className="chapter-chunks">
+                      {intent.resolvedChunks.map((chunk, chunkIdx) => (
+                        <div key={chunkIdx} className="story-chunk">
+                          <div className="story-chunk-header">
+                            <span className="story-chunk-anchor">{chunk.anchor}</span>
+                            {chunk.title && <span className="story-chunk-title">{chunk.title}</span>}
+                          </div>
+                          {chunk.description && (
+                            <p className="story-chunk-description">{chunk.description}</p>
+                          )}
+                          {chunk.decisions && chunk.decisions.length > 0 && (
+                            <div className="story-chunk-decisions">
+                              {chunk.decisions.map((decision, dIdx) => (
+                                <div key={dIdx} className="story-decision">
+                                  <span className="decision-arrow">→</span>
+                                  <span>{decision}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Empty state for home mode - waiting for user to select a repo */}
+      {files.length === 0 && !loading && !diffRequested && mode === "home" && (
         <div className="empty-state">
           <div className="empty-state-icon">📂</div>
           <div className="empty-state-title">Select a repository</div>
@@ -805,21 +1146,25 @@ function App() {
         </div>
       )}
 
-      {files.length === 0 && mode === "live" && !loading && diffRequested && !error && filteredIntentsV2.length === 0 && (
+      {/* Empty state for GitHub modes - no diff/content found */}
+      {filteredFiles.length === 0 && !loading && diffRequested && !error && filteredIntentsV2.length === 0 && viewMode !== "story" && (
         <div className="empty-state no-diff">
           <div className="no-diff-icon">📭</div>
-          <div className="no-diff-title">No changes found</div>
+          <div className="no-diff-title">
+            {diffContext?.type === "browse" ? "No intents found" : "No changes found"}
+          </div>
           <div className="no-diff-hint">
             {diffContext?.type === "branches" && `Branches ${diffContext.base} and ${diffContext.head} are identical.`}
             {diffContext?.type === "github-pr" && "This PR has no file changes."}
             {diffContext?.type === "github-branches" && `Branches ${diffContext.base} and ${diffContext.head} are identical.`}
+            {diffContext?.type === "browse" && "This repository doesn't have any intents configured."}
             {!diffContext && "The branches might be identical or contain only intent files."}
           </div>
         </div>
       )}
 
       {/* Show intents even without code diff - unified design */}
-      {files.length === 0 && mode === "live" && !loading && diffRequested && !error && filteredIntentsV2.length > 0 && (
+      {filteredFiles.length === 0 && !loading && diffRequested && !error && filteredIntentsV2.length > 0 && viewMode !== "story" && (
         <>
           {/* Intent recap at top - like PR recap */}
           {filteredIntentsV2.map((intent, intentIdx) => (
@@ -910,127 +1255,329 @@ function App() {
         <div className="loading">{t('loading')}</div>
       )}
 
-      {prSession && files.length > 0 && (
+      {filteredFiles.length > 0 && (
         <>
-      {/* PR-level recap - hide if we have v2 intents (they have their own recap) */}
-      {filteredIntentsV2.length === 0 && prSession.title !== "No intent file" && (
-        <div className="pr-recap">
-          <div className="pr-meta">
-            <span className="pr-date">{prSession.date}</span>
-            <span className="pr-title">{prSession.title}</span>
+      {/* No intent banner for PRs without documentation */}
+      {filteredIntentsV2.length === 0 && (mode === "github-pr" || diffContext?.type === "github-pr") && (
+        <div className="no-intent-banner">
+          <div className="no-intent-icon">📝</div>
+          <div className="no-intent-content">
+            <div className="no-intent-title">{t('noIntentTitle')}</div>
+            <div className="no-intent-desc">{t('noIntentDesc')}</div>
+            <div className="no-intent-hint">{t('noIntentHint')}</div>
           </div>
-          <div className="pr-info">
-            <div className="pr-item">
-              <span className="pr-label">{t('objective')}</span>
-              <span className="pr-value">{prSession.objective}</span>
-            </div>
-            <div className="pr-item">
-              <span className="pr-label">{t('risk')}</span>
-              <span className={`risk-badge risk-${prSession.risk.split(" ")[0].toLowerCase()}`}>
-                {prSession.risk}
-              </span>
-            </div>
-            <div className="pr-item">
-              <span className="pr-label">{t('files')}</span>
-              <span className="pr-value">{files.length} {t('modified').toLowerCase()}</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Intent summaries when available */}
-      {filteredIntentsV2.length > 0 && (
-        <div className="intents-summary">
-          <div className="intents-summary-header">
-            <span className="intents-count">{filteredIntentsV2.length} Intent{filteredIntentsV2.length > 1 ? 's' : ''}</span>
-          </div>
-          <div className="intents-summary-list">
-            {filteredIntentsV2.map((intent, idx) => {
-              const staleCount = intent.resolvedChunks.filter(c => c.hashMatch === false).length;
-              const _unresolvedCount = intent.resolvedChunks.filter(c => c.resolved === null).length;
-              void _unresolvedCount; // available for future use
-              return (
-                <div key={idx} className="intent-summary-card">
-                  <div className="intent-summary-header">
-                    <span className="intent-summary-id">#{intent.frontmatter.id}</span>
-                    <span className="intent-summary-title">{intent.title}</span>
-                    {intent.frontmatter.risk && (
-                      <span className={`risk-badge risk-${intent.frontmatter.risk}`}>{intent.frontmatter.risk}</span>
-                    )}
-                    {staleCount > 0 && (
-                      <span className="warning-badge stale-warning">{staleCount} stale</span>
-                    )}
-                  </div>
-                  <p className="intent-summary-text">{intent.summary}</p>
-                  <div className="intent-summary-meta">
-                    <span className="intent-chunks-count">{intent.resolvedChunks.length} chunks</span>
-                    {intent.frontmatter.tags && intent.frontmatter.tags.map((tag, i) => (
-                      <span key={i} className="tag-pill">{tag}</span>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <a
+            href="https://github.com/anthropics/intent#creating-intents"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="no-intent-link"
+          >
+            {t('createIntent')} →
+          </a>
         </div>
       )}
 
       <main className="app-main">
         {/* File Tree Sidebar */}
         <div className="files-sidebar">
-          <div className="sidebar-title">{t('modifiedFiles')}</div>
-          <div className="file-tree">
-            <div className="tree-folder">
-              <span className="tree-folder-icon">📁</span>
-              src/slack_cleaner/
+          <div className="sidebar-title-row">
+            <span className="sidebar-title">{t('modifiedFiles')}</span>
+            <div className="tree-actions">
+              <button
+                className={`tree-action-btn intent-toggle ${hideIntentFiles ? 'hidden' : 'visible'}`}
+                onClick={() => setHideIntentFiles(!hideIntentFiles)}
+                data-tooltip={hideIntentFiles ? t('showIntentFiles') : t('hideIntentFiles')}
+              >
+                <span className="toggle-icon">{hideIntentFiles ? '📄' : '📝'}</span>
+              </button>
+              <button
+                className="tree-action-btn"
+                onClick={() => expandAllFolders(buildFileTree(filteredFiles))}
+                data-tooltip={t('expandAll')}
+              >
+                ▼
+              </button>
+              <button
+                className="tree-action-btn"
+                onClick={collapseAllFolders}
+                data-tooltip={t('collapseAll')}
+              >
+                ▶
+              </button>
             </div>
-            {files.map((file, i) => {
-              const isNew = file.diff.oldPath === "/dev/null" || !file.diff.oldPath;
-              return (
-                <div
-                  key={i}
-                  className={`tree-file ${isNew ? "added" : "modified"}`}
-                  onClick={() => {
-                    const el = document.getElementById(`file-${file.filename}`);
-                    el?.scrollIntoView({ behavior: "smooth", block: "start" });
-                  }}
-                >
-                  <span className="tree-file-icon">{isNew ? "+" : "M"}</span>
-                  {file.filename}
-                </div>
-              );
-            })}
           </div>
+          <div className="file-tree">
+            {(() => {
+              const tree = buildFileTree(filteredFiles);
+              const countFiles = (nodes: TreeNode[]): number => {
+                return nodes.reduce((acc, node) => {
+                  if (node.isFile) return acc + 1;
+                  return acc + countFiles(node.children);
+                }, 0);
+              };
+              const renderNode = (node: TreeNode, depth: number = 0): React.ReactNode => {
+                const isExpanded = expandedFolders.has(node.path);
+                const indent = depth * 16;
+
+                if (node.isFile) {
+                  return (
+                    <div
+                      key={node.path}
+                      className={`tree-file ${node.isNew ? "added" : "modified"}`}
+                      style={{ paddingLeft: `${indent + 20}px` }}
+                      onClick={() => {
+                        const el = document.getElementById(`file-${node.name}`);
+                        el?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      }}
+                    >
+                      <span className={`tree-file-badge ${node.isNew ? "badge-added" : "badge-modified"}`}>
+                        {node.isNew ? "+" : "M"}
+                      </span>
+                      <span className="tree-file-name">{node.name}</span>
+                    </div>
+                  );
+                }
+
+                const fileCount = countFiles(node.children);
+                return (
+                  <div key={node.path} className="tree-folder">
+                    <div
+                      className={`tree-folder-header ${isExpanded ? 'expanded' : ''}`}
+                      style={{ paddingLeft: `${indent}px` }}
+                      onClick={() => toggleFolder(node.path)}
+                    >
+                      <span className={`tree-chevron ${isExpanded ? 'expanded' : ''}`}>
+                        ▶
+                      </span>
+                      <span className="tree-folder-icon">📁</span>
+                      <span className="tree-folder-name">{node.name}</span>
+                      <span className="tree-folder-count">{fileCount}</span>
+                    </div>
+                    {isExpanded && (
+                      <div className="tree-folder-children">
+                        {node.children.map((child) => renderNode(child, depth + 1))}
+                      </div>
+                    )}
+                  </div>
+                );
+              };
+              return tree.map((node) => renderNode(node, 0));
+            })()}
+          </div>
+
+          {/* Intents Section */}
+          {filteredIntentsV2.length > 0 && (
+            <div className="sidebar-intents">
+              <div className="sidebar-title">
+                Intents ({filteredIntentsV2.length})
+                {selectedIntentId && (
+                  <button
+                    className="clear-selection-btn"
+                    onClick={() => setSelectedIntentId(null)}
+                    title="Clear selection"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <div className="intents-list">
+                {filteredIntentsV2.map((intent) => {
+                  const isSelected = selectedIntentId === intent.frontmatter.id;
+                  // Get unique resolved files that are in changed files
+                  const linkedFiles = [...new Set(
+                    intent.resolvedChunks
+                      .filter(c => c.resolved && c.resolvedFile)
+                      .map(c => c.resolvedFile!)
+                      .filter(f => changedFiles.some(cf => cf.includes(f) || f.includes(cf)))
+                  )];
+                  const totalChunks = intent.resolvedChunks.filter(c => c.resolved).length;
+                  // Stale: code exists but has changed (resolved exists, hash mismatch)
+                  const staleCount = intent.resolvedChunks.filter(c =>
+                    c.resolved !== null && c.hashMatch === false
+                  ).length;
+                  return (
+                    <div
+                      key={intent.frontmatter.id}
+                      className={`intent-item ${isSelected ? 'selected' : ''}`}
+                      onClick={() => setSelectedIntentId(isSelected ? null : intent.frontmatter.id)}
+                    >
+                      <div className="intent-item-header">
+                        <span className="intent-item-id">#{intent.frontmatter.id}</span>
+                        {intent.frontmatter.risk && (
+                          <span className={`risk-dot risk-${intent.frontmatter.risk}`} title={intent.frontmatter.risk} />
+                        )}
+                        {staleCount > 0 && (
+                          <span className="stale-dot" title={`${staleCount} ${t('stale').toLowerCase()}`} />
+                        )}
+                      </div>
+                      <div className="intent-item-title">{intent.title}</div>
+                      <div className="intent-item-meta">
+                        {totalChunks} chunk{totalChunks !== 1 ? 's' : ''}
+                        {staleCount > 0 && <span className="meta-stale"> · {staleCount} {t('stale').toLowerCase()}</span>}
+                      </div>
+                      {linkedFiles.length > 0 && (
+                        <div className="intent-item-files">
+                          {linkedFiles.map((f, idx) => (
+                            <span key={idx} className="intent-file-tag">{f.split('/').pop()}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+            </div>
+          )}
         </div>
 
         {/* Files Content */}
         <div className="files-content">
-          {files.map((file, i) => {
+          {/* Selected Intent Header */}
+          {selectedIntent && (
+            <div className="selected-intent-header">
+              <div className="selected-intent-top">
+                <div className="selected-intent-badge">
+                  <span className="intent-id">#{selectedIntent.frontmatter.id}</span>
+                  {selectedIntent.frontmatter.risk && (
+                    <span className={`risk-badge risk-${selectedIntent.frontmatter.risk}`}>
+                      {selectedIntent.frontmatter.risk}
+                    </span>
+                  )}
+                  {selectedIntent.frontmatter.date && (
+                    <span className="intent-date">{selectedIntent.frontmatter.date}</span>
+                  )}
+                </div>
+                <button
+                  className="close-intent-btn"
+                  onClick={() => setSelectedIntentId(null)}
+                >
+                  ✕
+                </button>
+              </div>
+              <h2 className="selected-intent-title">{selectedIntent.title}</h2>
+              {selectedIntent.summary && (
+                <div className="selected-intent-section">
+                  <h4>{t('summary')}</h4>
+                  <p>{selectedIntent.summary}</p>
+                </div>
+              )}
+              {selectedIntent.motivation && (
+                <div className="selected-intent-section">
+                  <h4>{t('motivation')}</h4>
+                  <p>{selectedIntent.motivation}</p>
+                </div>
+              )}
+              {selectedIntent.frontmatter.tags && selectedIntent.frontmatter.tags.length > 0 && (
+                <div className="selected-intent-tags">
+                  {selectedIntent.frontmatter.tags.map((tag, i) => (
+                    <span key={i} className="tag-pill">{tag}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {filteredFiles.map((file, i) => {
             // Find all chunks from filtered intents that match this file
+            // All chunks are shown, but chunks from selected intent are highlighted
             const filePath = file.diff.newPath || file.diff.oldPath || file.filename;
-            const fileChunks = filteredIntentsV2.flatMap(intent =>
-              intent.resolvedChunks.filter(chunk => {
-                // Check if chunk's resolvedFile matches this diff file
-                if (!chunk.resolvedFile) return false;
-                return filePath.includes(chunk.resolvedFile) || chunk.resolvedFile.includes(file.filename);
+            // Check if this is a binary file or has no content
+            // Note: In browse mode, hunks are empty but fullFileContent exists - don't treat as empty
+            const hasBinaryExtension = filePath.match(/\.(png|jpg|jpeg|gif|ico|svg|webp|bmp|pdf|zip|tar|gz|exe|dll|so|dylib|woff|woff2|ttf|eot|mp3|mp4|mov|avi|mkv)$/i) !== null;
+            const hasNoHunks = file.diff.hunks.length === 0;
+            const hasFullContent = !!file.fullFileContent;
+            const isBinaryFile = hasNoHunks && hasBinaryExtension && !hasFullContent;
+            const isEmptyDiff = hasNoHunks && !hasBinaryExtension && !hasFullContent;
+
+            const fileChunks = filteredIntentsV2.flatMap(intent => {
+              // For GitHub PRs without resolved anchors, match chunks based on intent's files list
+              const intentFiles = intent.frontmatter.files || [];
+
+              // Strict match: only show chunks if this file is explicitly listed in the intent
+              const fileExplicitlyListed = intentFiles.some(f => {
+                const normalizedIntentFile = f.replace(/^\.\//, '');
+                const normalizedFilePath = filePath.replace(/^\.\//, '');
+                return normalizedFilePath === normalizedIntentFile ||
+                       normalizedFilePath.endsWith('/' + normalizedIntentFile) ||
+                       normalizedIntentFile.endsWith('/' + file.filename);
+              });
+
+              if (!fileExplicitlyListed) return [];
+
+              return intent.resolvedChunks.filter(chunk => {
+                // Only show chunks that are resolved (have actual code location)
+                if (!chunk.resolved) return false;
+
+                // If chunk has resolvedFile, use it for matching
+                if (chunk.resolvedFile) {
+                  return filePath.includes(chunk.resolvedFile) || chunk.resolvedFile.includes(file.filename);
+                }
+                // For resolved chunks without resolvedFile, show if file matches
+                return true;
               }).map(chunk => ({
                 ...chunk,
                 intentId: intent.frontmatter.id,
                 intentTitle: intent.title,
                 isNew: intent.isNew ?? false,
-              }))
-            );
+                isHighlighted: selectedIntentId ? intent.frontmatter.id === selectedIntentId : true,
+              }));
+            });
+
+            // Skip files with empty paths
+            if (!filePath || filePath.trim() === '') return null;
+
+            // For binary files or empty diffs, show a simple header without diff content
+            if (isBinaryFile || isEmptyDiff) {
+              const displayName = filePath.split('/').pop() || filePath;
+              const isNewFile = file.diff.oldPath === "/dev/null" || !file.diff.oldPath;
+              const isDeleted = file.diff.newPath === "/dev/null";
+
+              let statusText = '';
+              let statusClass = '';
+              if (isBinaryFile) {
+                if (isNewFile) {
+                  statusText = lang === 'fr' ? 'Fichier binaire ajouté' : 'Binary file added';
+                  statusClass = 'added';
+                } else if (isDeleted) {
+                  statusText = lang === 'fr' ? 'Fichier binaire supprimé' : 'Binary file deleted';
+                  statusClass = 'deleted';
+                } else {
+                  statusText = lang === 'fr' ? 'Fichier binaire modifié' : 'Binary file modified';
+                  statusClass = 'modified';
+                }
+              } else {
+                if (isNewFile) {
+                  statusText = lang === 'fr' ? 'Fichier ajouté' : 'File added';
+                  statusClass = 'added';
+                } else if (isDeleted) {
+                  statusText = lang === 'fr' ? 'Fichier supprimé' : 'File deleted';
+                  statusClass = 'deleted';
+                } else {
+                  statusText = lang === 'fr' ? 'Fichier modifié' : 'File modified';
+                  statusClass = 'modified';
+                }
+              }
+
+              return (
+                <div key={i} id={`file-${displayName}`} className="diff-viewer binary-file">
+                  <div className="diff-header">
+                    <span className="diff-filename">{displayName || filePath}</span>
+                    <span className={`binary-badge ${statusClass}`}>{statusText}</span>
+                  </div>
+                </div>
+              );
+            }
 
             return (
               <div key={i} id={`file-${file.filename}`}>
                 <DiffViewer
                   file={file.diff}
-                  session={file.session}
                   filename={file.filename}
                   onLinkClick={handleLinkClick}
                   fullFileContent={file.fullFileContent}
                   resolvedChunks={fileChunks}
-                  viewMode={viewMode}
+                  viewMode={viewMode === "story" ? "browse" : viewMode}
                   translations={{
                     new: t('new'), existing: t('existing'), context: t('context'), notInDiff: t('notInDiff'), modified: t('modified'),
                     deepDive: t('deepDive'), toastCopied: t('toastCopied'), toastError: t('toastError'),

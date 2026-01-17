@@ -2,11 +2,12 @@
  * Anchor Resolver - Resolves semantic anchors to line numbers
  *
  * Supported anchor types:
- * - @class:ClassName
- * - @function:func_name
- * - @pattern:code_snippet
- * - @line:14-21 (fallback)
- * - @block:START...END
+ * - @class:ClassName - Match class definition
+ * - @function:func_name - Match function/method definition
+ * - @method:Class.method - Match method in specific class
+ * - @pattern:code_snippet - Match first line containing text
+ * - @line:14-21 - Explicit line range (fragile)
+ * - @chunk:id - Virtual chunk with no code attached
  */
 
 export interface AnchorResult {
@@ -243,6 +244,17 @@ export function resolveAnchor(anchor: string, fileContent: string): AnchorResult
     return findFunction(fileContent, funcName);
   }
 
+  // @method:ClassName.method_name
+  if (anchor.startsWith('@method:')) {
+    const methodSpec = anchor.substring(8);
+    const dotIndex = methodSpec.indexOf('.');
+    if (dotIndex > 0) {
+      const methodName = methodSpec.substring(dotIndex + 1);
+      return findFunction(fileContent, methodName);
+    }
+    return null;
+  }
+
   // @pattern:code_snippet
   if (anchor.startsWith('@pattern:')) {
     const pattern = anchor.substring(9);
@@ -253,6 +265,18 @@ export function resolveAnchor(anchor: string, fileContent: string): AnchorResult
   if (anchor.startsWith('@line:')) {
     const lineSpec = anchor.substring(6);
     return parseLine(fileContent, lineSpec);
+  }
+
+  // @chunk:id - Virtual anchor for conceptual chunks (no code attached)
+  // Returns a virtual result that indicates this is a valid chunk but has no code location
+  if (anchor.startsWith('@chunk:')) {
+    return {
+      found: true,
+      startLine: 0,
+      endLine: 0,
+      content: '', // No code content
+      hash: '', // No hash since no code
+    };
   }
 
   return null;

@@ -4,11 +4,12 @@ import { listDirs, parseGitHubURL, parseGitHubRepoURL, discoverBranches, discove
 
 type SourceType = "local" | "github";
 type GitHubMode = "pr" | "branches";
-type ActionMode = "browse" | "compare";
+type ActionMode = "browse" | "compare" | "story";
 
 interface RepoSelectorProps {
   onLoadLocal: (repoPath: string, mode: DiffMode, base: string, head: string) => void;
   onLoadBrowse?: (repoPath: string, branch: string) => void;
+  onLoadStory?: (repoPath: string, branch: string) => void;
   onLoadGitHub: (owner: string, repo: string, prNumber: number) => void;
   onLoadGitHubBranches?: (owner: string, repo: string, base: string, head: string) => void;
   loading: boolean;
@@ -16,9 +17,10 @@ interface RepoSelectorProps {
   defaultPath?: string;
   defaultBase?: string;
   defaultHead?: string;
+  localOnly?: boolean;  // Hide GitHub options when true (home mode)
 }
 
-export function RepoSelector({ onLoadLocal, onLoadBrowse, onLoadGitHub, onLoadGitHubBranches, loading, error, defaultPath, defaultBase, defaultHead }: RepoSelectorProps) {
+export function RepoSelector({ onLoadLocal, onLoadBrowse, onLoadStory, onLoadGitHub, onLoadGitHubBranches, loading, error, defaultPath, defaultBase, defaultHead, localOnly = false }: RepoSelectorProps) {
   const [sourceType, setSourceType] = useState<SourceType>("local");
   const [actionMode, setActionMode] = useState<ActionMode>("compare");
 
@@ -174,6 +176,8 @@ export function RepoSelector({ onLoadLocal, onLoadBrowse, onLoadGitHub, onLoadGi
     if (currentPath.trim()) {
       if (actionMode === "browse" && onLoadBrowse) {
         onLoadBrowse(currentPath.trim(), browseBranch.trim());
+      } else if (actionMode === "story" && onLoadStory) {
+        onLoadStory(currentPath.trim(), browseBranch.trim());
       } else {
         onLoadLocal(currentPath.trim(), "branches", base.trim(), head.trim());
       }
@@ -214,23 +218,25 @@ export function RepoSelector({ onLoadLocal, onLoadBrowse, onLoadGitHub, onLoadGi
 
   return (
     <div className="repo-selector">
-      {/* Source type tabs */}
-      <div className="source-tabs">
-        <button
-          type="button"
-          className={sourceType === "local" ? "active" : ""}
-          onClick={() => setSourceType("local")}
-        >
-          Local Repository
-        </button>
-        <button
-          type="button"
-          className={sourceType === "github" ? "active" : ""}
-          onClick={() => setSourceType("github")}
-        >
-          GitHub PR
-        </button>
-      </div>
+      {/* Source type tabs - only show if not localOnly */}
+      {!localOnly && (
+        <div className="source-tabs">
+          <button
+            type="button"
+            className={sourceType === "local" ? "active" : ""}
+            onClick={() => setSourceType("local")}
+          >
+            Local Repository
+          </button>
+          <button
+            type="button"
+            className={sourceType === "github" ? "active" : ""}
+            onClick={() => setSourceType("github")}
+          >
+            GitHub PR
+          </button>
+        </div>
+      )}
 
       {sourceType === "local" && (
         <form onSubmit={handleSubmitLocal}>
@@ -320,6 +326,16 @@ export function RepoSelector({ onLoadLocal, onLoadBrowse, onLoadGitHub, onLoadGi
                   <div className="action-mode-desc">View diff between two branches with intents</div>
                 </div>
               </div>
+              <div
+                className={`action-mode-card ${actionMode === "story" ? "active" : ""}`}
+                onClick={() => setActionMode("story")}
+              >
+                <div className="action-mode-icon">📚</div>
+                <div className="action-mode-content">
+                  <div className="action-mode-title">Story Mode</div>
+                  <div className="action-mode-desc">Read all intents as a narrative</div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -384,6 +400,72 @@ export function RepoSelector({ onLoadLocal, onLoadBrowse, onLoadGitHub, onLoadGi
                   disabled={loading || !currentPath.trim() || !isGitRepo || !onLoadBrowse}
                 >
                   {loading ? "Loading..." : "Browse Branch"}
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* Story mode: single branch selector */}
+          {isGitRepo && actionMode === "story" && (
+            <>
+              <div className="form-row">
+                <label>
+                  <span>Branch:</span>
+                  <div className="branch-input-group">
+                    <input
+                      type="text"
+                      value={browseBranch}
+                      onChange={(e) => setBrowseBranch(e.target.value)}
+                      placeholder="main"
+                    />
+                    {branches.length > 0 && (
+                      <button
+                        type="button"
+                        className="branch-dropdown-btn"
+                        onClick={() => setBranchSelectorOpen(!branchSelectorOpen)}
+                      >
+                        ▼
+                      </button>
+                    )}
+                  </div>
+                </label>
+              </div>
+
+              {/* Branch selector dropdown for story */}
+              {branchSelectorOpen && branches.length > 0 && (
+                <div className="branch-selector-dropdown">
+                  <div className="branch-selector-header">Select branch</div>
+                  <div className="branch-list">
+                    {branches.map((branch) => (
+                      <div
+                        key={branch.name}
+                        className={`branch-item ${branch.isDefault ? "default" : ""} ${branch.isCurrent ? "current" : ""}`}
+                        onClick={() => handleSelectBrowseBranch(branch)}
+                      >
+                        <div className="branch-item-main">
+                          <span className="branch-name">{branch.name}</span>
+                          {branch.hasIntents && (
+                            <span className="intent-badge">{branch.intentCount}</span>
+                          )}
+                          {branch.isDefault && <span className="default-badge">default</span>}
+                          {branch.isCurrent && <span className="current-badge">*</span>}
+                        </div>
+                        <div className="branch-item-meta">
+                          <span className="branch-time">{branch.lastCommit}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="form-row">
+                <button
+                  type="submit"
+                  className="load-button"
+                  disabled={loading || !currentPath.trim() || !isGitRepo || !onLoadStory}
+                >
+                  {loading ? "Loading..." : "Read Story"}
                 </button>
               </div>
             </>
@@ -503,7 +585,7 @@ export function RepoSelector({ onLoadLocal, onLoadBrowse, onLoadGitHub, onLoadGi
         </form>
       )}
 
-      {sourceType === "github" && (
+      {sourceType === "github" && !localOnly && (
         <form onSubmit={handleSubmitGitHub}>
           <div className="form-row">
             <label>

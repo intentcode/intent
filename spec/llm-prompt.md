@@ -1,130 +1,239 @@
 # LLM Prompt for Generating Intent Files
 
-Use this prompt (or add to your coding agent's system prompt) to generate intent.md files alongside code changes.
+Ce document contient les prompts pour générer des fichiers intent avec un LLM.
 
 ---
 
-## System Prompt Addition
-
-```
-## Intent Documentation
-
-When you make code changes, generate an intent.md file that explains the "why" behind your changes. This helps humans review and understand your work.
-
-### Format
-
-For each file you modify significantly, create or update a `<filename>.intent.md` file:
+## Option 1: System Prompt (ajout au CLAUDE.md ou system prompt)
 
 ```markdown
-# filename.py
+## Intent Documentation
 
-## {DATE} {TIME} | {SHORT_TITLE}
+Quand tu fais des changements de code significatifs, génère un fichier intent qui explique le "pourquoi" derrière tes changements.
 
-### Recap
-**Objectif:** {One sentence describing the goal}
-**Risque:** {Low|Medium|High} - {Brief risk explanation}
+### Format Intent v2
 
-### Chunks
+Les intents sont stockés dans `.intent/intents/` avec un manifest `.intent/manifest.yaml`.
 
-#### L{start}-{end} | {Chunk Title}
-{1-2 sentence description of what this code does}
-> Decision: {Why you chose this approach over alternatives}
-@replaces L{old_start}-{old_end} | {What was removed and why}
-@link {other_file.py}#L{start}-{end} | {How this relates to other code}
+Structure d'un fichier intent:
 
-#### D{start}-{end} | {Deletion Title}
-{Explain why this code was removed}
-> Decision: {Rationale for removal}
-
+```markdown
 ---
+id: feature-name
+from: commit-or-branch
+author: claude
+date: 2024-01-15
+status: active
+risk: low|medium|high
+tags: [feature, bugfix, refactor]
+files:
+  - src/path/to/file.ts
+  - src/another/file.py
+---
+
+# Titre du changement
+# fr: Titre en français (optionnel)
+
+## Summary
+en: Description en anglais de ce que ce changement accomplit.
+fr: Description en français (optionnel).
+
+## Motivation
+en: Pourquoi ce changement était nécessaire.
+
+## Chunks
+
+### @function:nom_fonction | Titre du chunk
+### fr: Titre en français (optionnel)
+
+en: Description de ce que ce code fait et pourquoi.
+
+Points clés:
+- Point 1
+- Point 2
+
+> Decision: Justification d'un choix spécifique
+> fr: Justification en français (optionnel)
+
+@link @function:autre_fonction | Utilise cette fonction
+@link autre_fichier.py@function:helper | Dépend de ce helper
 ```
 
-### Rules
+### Types d'ancres (du plus robuste au moins robuste)
 
-1. **Line numbers matter**: Use actual line numbers from the final file
-   - `L` prefix for new/modified lines (new file line numbers)
-   - `D` prefix for deleted lines (old file line numbers)
+| Ancre | Usage | Exemple |
+|-------|-------|---------|
+| `@function:name` | Fonction/méthode | `@function:validateUser` |
+| `@class:Name` | Classe | `@class:UserService` |
+| `@method:Class.method` | Méthode dans une classe | `@method:UserService.validate` |
+| `@pattern:code` | Texte à rechercher | `@pattern:if __name__` |
+| `@chunk:id` | Chunk conceptuel (pas de code) | `@chunk:architecture-overview` |
+| `@line:10-20` | Lignes explicites (fragile!) | `@line:42-58` |
 
-2. **Be specific about decisions**: Don't just say what, explain why
-   - BAD: "Added error handling"
-   - GOOD: "Added try/catch because API can timeout under load"
+### Règles
 
-3. **Link related code**: Help reviewers navigate
-   - Link to code this depends on
-   - Link to code that depends on this
-   - Link to related tests
+1. **Préfère les ancres sémantiques** (`@function`, `@class`) aux `@line` - elles survivent au refactoring
 
-4. **Document deletions**: Explain why code was removed
-   - Was it replaced? Link to replacement
-   - Was it dead code? Explain how you verified
-   - Was it buggy? Explain the bug
+2. **Explique le "pourquoi"**, pas juste le "quoi"
+   - ❌ "Added error handling"
+   - ✅ "Added try/catch because the API can timeout under heavy load"
 
-5. **Chunk granularity**:
-   - One chunk per logical unit (5-30 lines typically)
-   - Group related changes together
-   - Separate chunks for unrelated changes in same file
+3. **Un chunk par concept** - ne sur-documente pas
+   - Groupe les changements liés
+   - Sépare les changements non liés
 
-### When to Generate Intent
+4. **Utilise les liens** pour connecter le code
+   - `@link @function:helper` - même fichier
+   - `@link utils.py@function:parse` - autre fichier
+   - `@link @chunk:overview` - référence conceptuelle
 
-Generate intent.md when:
-- Adding new features
-- Fixing non-trivial bugs
-- Refactoring code
-- Making architectural decisions
-- Removing significant code
+5. **Évalue le risque honnêtement**
+   - `low`: Changement isolé, facile à reverter
+   - `medium`: Touche plusieurs fichiers, tests nécessaires
+   - `high`: Changement architectural, sécurité, données
 
-Skip intent.md for:
-- Typo fixes
+### Quand générer un intent
+
+✅ Génère un intent pour:
+- Nouvelles features
+- Bug fixes non-triviaux
+- Refactoring
+- Décisions architecturales
+- Suppression de code significatif
+
+❌ Skip pour:
+- Typos
+- Formatting
 - Import sorting
-- Pure formatting changes
-- Trivial one-line fixes
+- Fixes d'une ligne évidents
 ```
 
 ---
 
-## Example Prompt for One-Shot Generation
+## Option 2: Prompt One-Shot (copier-coller dans n'importe quel LLM)
 
 ```
-Based on the following git diff, generate an intent.md file that explains the changes:
+Tu es un expert en documentation de code. Génère un fichier intent.md pour expliquer les changements suivants.
 
+FORMAT REQUIS:
+- YAML frontmatter avec: id, from, date, status, risk, tags, files
+- Section Summary et Motivation
+- Chunks avec ancres sémantiques (@function:name, @class:Name, etc.)
+- Decisions (> Decision: ...) pour expliquer les choix
+- Links (@link ...) pour connecter le code
+
+TYPES D'ANCRES (préfère les premiers):
+1. @function:nom - pour les fonctions
+2. @class:Nom - pour les classes
+3. @method:Classe.methode - pour les méthodes
+4. @pattern:texte - pour du texte à chercher
+5. @chunk:id - pour du contenu conceptuel sans code
+6. @line:10-20 - ÉVITE si possible (fragile)
+
+RÈGLES:
+- Explique le POURQUOI, pas juste le QUOI
+- Un chunk = un concept
+- Risque: low/medium/high selon l'impact
+- Lie le code avec @link
+
+DIFF À ANALYSER:
 <diff>
-{paste diff here}
+{colle ton diff ici}
 </diff>
 
-Generate a {filename}.intent.md that:
-1. Has a clear objective and risk assessment
-2. Groups changes into logical chunks with line numbers
-3. Explains decisions and trade-offs
-4. Links related code across files
-5. Documents any deletions with rationale
+Génère le fichier intent.md complet.
 ```
 
 ---
 
-## Example Prompt for Interactive Session
+## Option 3: Prompt Interactif (session de coding)
 
 ```
-I'm about to implement {feature description}.
+Je vais implémenter: {description de la feature}
 
-As I write code, help me document the intent:
-1. After each significant change, suggest an intent chunk
-2. Prompt me to explain my decisions
-3. Identify code that should be linked
-4. Flag deletions that need documentation
+Aide-moi à documenter l'intent au fur et à mesure:
 
-Let's start. Here's my first change:
-{code or diff}
+1. Après chaque changement significatif, suggère un chunk avec:
+   - Ancre sémantique appropriée
+   - Description du "pourquoi"
+   - Décisions prises
+
+2. Identifie les liens vers d'autre code
+
+3. À la fin, génère le fichier intent.md complet
+
+Premier changement:
+{code ou diff}
 ```
 
 ---
 
-## Validation Checklist
+## Option 4: Claude Code Hook
 
-Before finalizing intent.md, verify:
+Crée un fichier `.claude/hooks/post-commit.sh`:
 
-- [ ] Line numbers match actual file
-- [ ] Every chunk has a clear "why" not just "what"
-- [ ] Deletions (D prefix) reference old file line numbers
-- [ ] Links point to real code that exists
-- [ ] Risk assessment is realistic
-- [ ] Decisions mention alternatives considered
+```bash
+#!/bin/bash
+# Hook pour générer/mettre à jour les intents après un commit
+
+# Récupère le diff du dernier commit
+DIFF=$(git diff HEAD~1)
+
+# Génupère le prompt
+cat << EOF
+Analyse ce diff et mets à jour les fichiers intent si nécessaire.
+
+Règles:
+- Lis .intent/manifest.yaml pour voir les intents existants
+- Mets à jour les intents touchés par ce commit
+- Crée un nouvel intent si c'est une nouvelle feature
+- Utilise le format v2 avec ancres sémantiques
+
+Diff:
+$DIFF
+EOF
+```
+
+---
+
+## Option 5: MCP Tool (pour intégration programmatique)
+
+```typescript
+// Tool MCP pour générer des intents
+{
+  name: "generate_intent",
+  description: "Génère un fichier intent à partir d'un diff ou de fichiers modifiés",
+  parameters: {
+    diff: "string - le diff git à analyser",
+    files: "string[] - liste des fichiers modifiés",
+    existing_intents: "string[] - intents existants à potentiellement mettre à jour"
+  }
+}
+```
+
+---
+
+## Checklist de validation
+
+Avant de finaliser un intent, vérifie:
+
+- [ ] Les ancres pointent vers du code qui existe
+- [ ] Chaque chunk a un "pourquoi" clair
+- [ ] Le risque est réaliste
+- [ ] Les décisions mentionnent les alternatives considérées
+- [ ] Les liens sont valides
+- [ ] Le manifest.yaml est mis à jour
+- [ ] Les fichiers listés dans `files:` sont corrects
+
+---
+
+## Auto-évolution
+
+Ce prompt doit évoluer avec le projet. Pour le mettre à jour:
+
+1. Consulte `/spec/intent-format.md` pour le format officiel
+2. Consulte `CLAUDE.md` pour le contexte projet
+3. Regarde les exemples dans `.intent/intents/`
+4. Adapte le prompt en conséquence
+
+Le LLM qui génère des intents devrait toujours lire ces fichiers pour s'assurer de suivre le format actuel.

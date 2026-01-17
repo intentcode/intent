@@ -12,6 +12,8 @@ export interface DiffHunk {
   startLineOld: number;
   startLineNew: number;
   lines: DiffLine[];
+  isVirtual?: boolean; // True if this is a virtual hunk for context display
+  chunkAnchor?: string; // Reference to the chunk anchor if virtual
 }
 
 export interface DiffFile {

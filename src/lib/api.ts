@@ -21,6 +21,7 @@ export interface ResolvedChunkAPI {
   resolved: AnchorResultAPI | null;
   resolvedFile: string | null; // Which file this chunk was resolved in
   hashMatch: boolean | null;
+  overlaps?: string[]; // anchors of chunks that overlap with this one
 }
 
 export interface IntentFrontmatterAPI {
@@ -257,12 +258,13 @@ export interface GitHubPRResponse extends DiffResponse {
 export async function fetchGitHubPR(
   owner: string,
   repo: string,
-  prNumber: number
+  prNumber: number,
+  lang?: string
 ): Promise<GitHubPRResponse> {
   const res = await fetch(`${API_BASE}/api/github-pr`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ owner, repo, prNumber }),
+    body: JSON.stringify({ owner, repo, prNumber, lang }),
   });
 
   if (!res.ok) {
@@ -316,17 +318,39 @@ export async function discoverGitHubBranches(owner: string, repo: string): Promi
   return res.json();
 }
 
+// Browse a GitHub repository branch (view files with intents)
+export async function fetchGitHubBrowse(
+  owner: string,
+  repo: string,
+  branch: string,
+  lang?: string
+): Promise<BrowseResponse> {
+  const res = await fetch(`${API_BASE}/api/github-browse`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner, repo, branch, lang }),
+  });
+
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.error || "Failed to browse GitHub repository");
+  }
+
+  return res.json();
+}
+
 // Fetch diff between two GitHub branches
 export async function fetchGitHubBranchesDiff(
   owner: string,
   repo: string,
   base: string,
-  head: string
+  head: string,
+  lang?: string
 ): Promise<DiffResponse & { branchInfo?: { base: string; head: string; aheadBy: number; behindBy: number; totalCommits: number } }> {
   const res = await fetch(`${API_BASE}/api/github-branches-diff`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ owner, repo, base, head }),
+    body: JSON.stringify({ owner, repo, base, head, lang }),
   });
 
   if (!res.ok) {

@@ -20,3 +20,15 @@ intents:
   - id: "006"
     file: 006-deep-dive.intent.md
     status: active
+  - id: "007"
+    file: 007-multilingual-support.intent.md
+    status: active
+  - id: "008"
+    file: 008-ui-improvements.intent.md
+    status: active
+  - id: "009"
+    file: 009-virtual-hunks.intent.md
+    status: active
+  - id: "010"
+    file: 010-github-oauth.intent.md
+    status: active

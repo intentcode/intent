@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { execSync } from "child_process";
@@ -14,6 +15,79 @@ import { resolveAnchor, type AnchorResult } from "../src/lib/anchorResolver";
 
 const app = express();
 const PORT = 3001;
+
+// GitHub API token (optional, increases rate limit from 60 to 5000 requests/hour)
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+
+// Helper to get GitHub API headers
+function getGitHubHeaders(accept: string = "application/vnd.github.v3+json"): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: accept,
+    "User-Agent": "Intent-App",
+  };
+  if (GITHUB_TOKEN) {
+    headers["Authorization"] = `Bearer ${GITHUB_TOKEN}`;
+  }
+  return headers;
+}
+
+// Detect overlapping chunks within the same file
+interface ChunkWithFile {
+  anchor: string;
+  resolvedFile?: string | null;
+  resolved: { startLine: number; endLine: number } | null;
+}
+
+function detectOverlaps(chunks: ChunkWithFile[]): Map<string, string[]> {
+  const overlaps = new Map<string, string[]>();
+
+  // Group chunks by file
+  const chunksByFile = new Map<string, ChunkWithFile[]>();
+  for (const chunk of chunks) {
+    if (chunk.resolved && chunk.resolvedFile) {
+      const existing = chunksByFile.get(chunk.resolvedFile) || [];
+      existing.push(chunk);
+      chunksByFile.set(chunk.resolvedFile, existing);
+    }
+  }
+
+  // Check for overlaps within each file
+  for (const [_file, fileChunks] of chunksByFile) {
+    for (let i = 0; i < fileChunks.length; i++) {
+      for (let j = i + 1; j < fileChunks.length; j++) {
+        const a = fileChunks[i];
+        const b = fileChunks[j];
+
+        if (!a.resolved || !b.resolved) continue;
+
+        // Check if ranges overlap
+        const aStart = a.resolved.startLine;
+        const aEnd = a.resolved.endLine;
+        const bStart = b.resolved.startLine;
+        const bEnd = b.resolved.endLine;
+
+        // Overlap if: aStart <= bEnd AND bStart <= aEnd
+        if (aStart <= bEnd && bStart <= aEnd) {
+          // Add overlap for chunk a
+          const aOverlaps = overlaps.get(a.anchor) || [];
+          if (!aOverlaps.includes(b.anchor)) {
+            aOverlaps.push(b.anchor);
+          }
+          overlaps.set(a.anchor, aOverlaps);
+
+          // Add overlap for chunk b
+          const bOverlaps = overlaps.get(b.anchor) || [];
+          if (!bOverlaps.includes(a.anchor)) {
+            bOverlaps.push(a.anchor);
+          }
+          overlaps.set(b.anchor, bOverlaps);
+        }
+      }
+    }
+  }
+
+  return overlaps;
+}
 
 app.use(cors());
 app.use(express.json());
@@ -120,7 +194,7 @@ app.post("/api/diff", (req, res) => {
           }
 
           if (intentContent) {
-            const parsed = parseIntentV2(intentContent);
+            const parsed = parseIntentV2(intentContent, lang || 'en');
             if (parsed) {
               parsedIntents.push(parsed);
             }
@@ -141,7 +215,9 @@ app.post("/api/diff", (req, res) => {
         links: Array<{ target: string; reason: string }>;
         storedHash?: string;
         resolved: AnchorResult | null;
+        resolvedFile?: string | null;
         hashMatch: boolean | null;
+        overlaps?: string[]; // anchors of chunks that overlap with this one
       }>;
     }
 
@@ -213,8 +289,19 @@ app.post("/api/diff", (req, res) => {
     }
 
     // Load full file content for expand context feature
+    // Include both changed files AND files referenced by intents (for virtual hunks)
     const fileContents: Record<string, string> = {};
-    for (const file of codeFiles) {
+    const filesToLoad = new Set<string>(codeFiles);
+
+    // Add files referenced by intents
+    for (const intent of intentsWithResolution) {
+      for (const file of intent.frontmatter.files) {
+        const normalizedFile = file.replace(/^\.\//, '');
+        filesToLoad.add(normalizedFile);
+      }
+    }
+
+    for (const file of filesToLoad) {
       const fullPath = path.join(repoPath, file);
       if (existsSync(fullPath)) {
         try {
@@ -225,11 +312,30 @@ app.post("/api/diff", (req, res) => {
       }
     }
 
+    // Detect overlapping chunks across all intents
+    const allChunks = intentsWithResolution.flatMap(intent =>
+      intent.resolvedChunks.map(c => ({
+        anchor: c.anchor,
+        resolvedFile: c.resolvedFile,
+        resolved: c.resolved,
+      }))
+    );
+    const overlapsMap = detectOverlaps(allChunks);
+
+    // Add overlaps info to each chunk
+    const intentsWithOverlaps = intentsWithResolution.map(intent => ({
+      ...intent,
+      resolvedChunks: intent.resolvedChunks.map(chunk => ({
+        ...chunk,
+        overlaps: overlapsMap.get(chunk.anchor) || [],
+      })),
+    }));
+
     res.json({
       diff: filteredDiff,
       changedFiles: codeFiles,
       intents: legacyIntents, // Legacy format
-      intentsV2: intentsWithResolution, // New v2 format with resolved anchors
+      intentsV2: intentsWithOverlaps, // New v2 format with resolved anchors and overlaps
       manifest,
       fileContents, // Full file content for expand context
     });
@@ -299,7 +405,7 @@ app.post("/api/browse", (req, res) => {
           }
 
           if (intentContent) {
-            const parsed = parseIntentV2(intentContent);
+            const parsed = parseIntentV2(intentContent, lang || 'en');
             if (parsed) {
               parsedIntents.push(parsed);
               // Collect files from this intent
@@ -327,6 +433,7 @@ app.post("/api/browse", (req, res) => {
         resolved: AnchorResult | null;
         resolvedFile?: string;
         hashMatch: boolean | null;
+        overlaps?: string[];
       }>;
     }
 
@@ -398,8 +505,27 @@ app.post("/api/browse", (req, res) => {
       }
     }
 
+    // Detect overlapping chunks across all intents
+    const allChunks = intentsWithResolution.flatMap(intent =>
+      intent.resolvedChunks.map(c => ({
+        anchor: c.anchor,
+        resolvedFile: c.resolvedFile,
+        resolved: c.resolved,
+      }))
+    );
+    const overlapsMap = detectOverlaps(allChunks);
+
+    // Add overlaps info to each chunk
+    const intentsWithOverlaps = intentsWithResolution.map(intent => ({
+      ...intent,
+      resolvedChunks: intent.resolvedChunks.map(chunk => ({
+        ...chunk,
+        overlaps: overlapsMap.get(chunk.anchor) || [],
+      })),
+    }));
+
     res.json({
-      intentsV2: intentsWithResolution,
+      intentsV2: intentsWithOverlaps,
       files,
       fileContents,
       branch,
@@ -650,12 +776,7 @@ app.post("/api/github-pr", async (req, res) => {
     // Fetch PR diff from GitHub API
     const response = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
-      {
-        headers: {
-          Accept: "application/vnd.github.v3.diff",
-          "User-Agent": "Intent-App",
-        },
-      }
+      { headers: getGitHubHeaders("application/vnd.github.v3.diff") }
     );
 
     if (!response.ok) {
@@ -667,12 +788,7 @@ app.post("/api/github-pr", async (req, res) => {
     // Get PR info
     const prInfoResponse = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
-      {
-        headers: {
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "Intent-App",
-        },
-      }
+      { headers: getGitHubHeaders() }
     );
 
     const prInfo = await prInfoResponse.json();
@@ -680,22 +796,149 @@ app.post("/api/github-pr", async (req, res) => {
     // Get changed files
     const filesResponse = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/files`,
-      {
-        headers: {
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "Intent-App",
-        },
-      }
+      { headers: getGitHubHeaders() }
     );
 
     const files = await filesResponse.json();
     const changedFiles = files.map((f: { filename: string }) => f.filename);
 
+    const head = prInfo.head?.ref;
+    const lang = req.body.lang || 'en';
+
+    // Try to load intents from the head branch
+    const intentsV2: IntentV2[] = [];
+    let manifest: Manifest | null = null;
+
+    try {
+      // Check if manifest exists
+      const manifestResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/contents/.intent/manifest.yaml?ref=${head}`,
+        { headers: getGitHubHeaders() }
+      );
+
+      if (manifestResponse.ok) {
+        const manifestData = await manifestResponse.json();
+        if (manifestData.content) {
+          const manifestContent = Buffer.from(manifestData.content, "base64").toString("utf-8");
+          manifest = parseManifest(manifestContent);
+
+          if (manifest) {
+            // Load each intent file
+            for (const intentEntry of manifest.intents) {
+              if (intentEntry.status !== "active") continue;
+
+              try {
+                const intentResponse = await fetch(
+                  `https://api.github.com/repos/${owner}/${repo}/contents/.intent/intents/${intentEntry.file}?ref=${head}`,
+                  { headers: getGitHubHeaders() }
+                );
+
+                if (intentResponse.ok) {
+                  const intentData = await intentResponse.json();
+                  if (intentData.content) {
+                    const intentContent = Buffer.from(intentData.content, "base64").toString("utf-8");
+                    const parsed = parseIntentV2(intentContent, lang);
+                    if (parsed) {
+                      intentsV2.push(parsed);
+                    }
+                  }
+                }
+              } catch {
+                // Failed to load this intent
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // No intents in this branch
+    }
+
+    // Collect all files referenced by intents to fetch their content
+    const filesToFetch = new Set<string>();
+    for (const intent of intentsV2) {
+      for (const file of intent.frontmatter.files) {
+        filesToFetch.add(file.replace(/^\.\//, ''));
+      }
+    }
+
+    // Fetch file contents from GitHub
+    const fileContents: Record<string, string> = {};
+    for (const filePath of filesToFetch) {
+      try {
+        const fileResponse = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${head}`,
+          { headers: getGitHubHeaders() }
+        );
+        if (fileResponse.ok) {
+          const fileData = await fileResponse.json();
+          if (fileData.content) {
+            fileContents[filePath] = Buffer.from(fileData.content, "base64").toString("utf-8");
+          }
+        }
+      } catch {
+        // File not found or error fetching
+      }
+    }
+
+    // Resolve anchors for each intent's chunks
+    const resolvedIntentsV2 = intentsV2.map((intent) => {
+      const resolvedChunks = intent.chunks.map((chunk) => {
+        // Find which file this chunk belongs to
+        let resolvedFile: string | null = null;
+        let resolved: { startLine: number; endLine: number; content: string; contentHash: string } | null = null;
+        let hashMatch: boolean | null = null;
+
+        // Try to resolve in each of the intent's files
+        for (const file of intent.frontmatter.files) {
+          const normalizedFile = file.replace(/^\.\//, '');
+          const content = fileContents[normalizedFile];
+          if (!content) continue;
+
+          const anchorResult = resolveAnchor(chunk.anchor, content);
+          if (anchorResult && anchorResult.found) {
+            resolvedFile = normalizedFile;
+            resolved = {
+              startLine: anchorResult.startLine,
+              endLine: anchorResult.endLine,
+              content: anchorResult.content,
+              contentHash: anchorResult.hash,
+            };
+            // Check hash match if stored hash exists
+            if (chunk.storedHash) {
+              hashMatch = anchorResult.hash === chunk.storedHash;
+            }
+            break;
+          }
+        }
+
+        return {
+          ...chunk,
+          resolvedFile,
+          resolved,
+          hashMatch,
+        };
+      });
+
+      // Detect overlaps
+      const overlaps = detectOverlaps(resolvedChunks);
+
+      return {
+        ...intent,
+        resolvedChunks: resolvedChunks.map(chunk => ({
+          ...chunk,
+          overlaps: overlaps.get(chunk.anchor) || [],
+        })),
+      };
+    });
+
     res.json({
       diff,
       changedFiles,
-      intents: {}, // No local intents for remote repos
-      manifest: null,
+      intents: {}, // No legacy intents for GitHub
+      intentsV2: resolvedIntentsV2,
+      manifest,
+      fileContents, // Full file content for virtual hunks
       prInfo: {
         title: prInfo.title,
         number: prInfo.number,
@@ -713,11 +956,12 @@ app.post("/api/github-pr", async (req, res) => {
 
 // Fetch GitHub diff between two branches
 app.post("/api/github-branches-diff", async (req, res) => {
-  const { owner, repo, base, head } = req.body as {
+  const { owner, repo, base, head, lang } = req.body as {
     owner: string;
     repo: string;
     base: string;
     head: string;
+    lang?: string;
   };
 
   if (!owner || !repo || !base || !head) {
@@ -728,12 +972,7 @@ app.post("/api/github-branches-diff", async (req, res) => {
     // Get diff between branches
     const diffResponse = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/compare/${base}...${head}`,
-      {
-        headers: {
-          Accept: "application/vnd.github.v3.diff",
-          "User-Agent": "Intent-App",
-        },
-      }
+      { headers: getGitHubHeaders("application/vnd.github.v3.diff") }
     );
 
     if (!diffResponse.ok) {
@@ -745,12 +984,7 @@ app.post("/api/github-branches-diff", async (req, res) => {
     // Get compare info for changed files
     const compareResponse = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/compare/${base}...${head}`,
-      {
-        headers: {
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "Intent-App",
-        },
-      }
+      { headers: getGitHubHeaders() }
     );
 
     const compareData = await compareResponse.json();
@@ -764,12 +998,7 @@ app.post("/api/github-branches-diff", async (req, res) => {
       // Check if manifest exists
       const manifestResponse = await fetch(
         `https://api.github.com/repos/${owner}/${repo}/contents/.intent/manifest.yaml?ref=${head}`,
-        {
-          headers: {
-            Accept: "application/vnd.github.v3+json",
-            "User-Agent": "Intent-App",
-          },
-        }
+        { headers: getGitHubHeaders() }
       );
 
       if (manifestResponse.ok) {
@@ -786,19 +1015,14 @@ app.post("/api/github-branches-diff", async (req, res) => {
               try {
                 const intentResponse = await fetch(
                   `https://api.github.com/repos/${owner}/${repo}/contents/.intent/intents/${intentEntry.file}?ref=${head}`,
-                  {
-                    headers: {
-                      Accept: "application/vnd.github.v3+json",
-                      "User-Agent": "Intent-App",
-                    },
-                  }
+                  { headers: getGitHubHeaders() }
                 );
 
                 if (intentResponse.ok) {
                   const intentData = await intentResponse.json();
                   if (intentData.content) {
                     const intentContent = Buffer.from(intentData.content, "base64").toString("utf-8");
-                    const parsed = parseIntentV2(intentContent);
+                    const parsed = parseIntentV2(intentContent, lang || 'en');
                     if (parsed) {
                       intentsV2.push(parsed);
                     }
@@ -815,19 +1039,88 @@ app.post("/api/github-branches-diff", async (req, res) => {
       // No intents in this branch
     }
 
+    // Collect all files referenced by intents to fetch their content
+    const filesToFetch = new Set<string>();
+    for (const intent of intentsV2) {
+      for (const file of intent.frontmatter.files) {
+        filesToFetch.add(file.replace(/^\.\//, ''));
+      }
+    }
+
+    // Fetch file contents from GitHub
+    const fileContents: Record<string, string> = {};
+    for (const filePath of filesToFetch) {
+      try {
+        const fileResponse = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${head}`,
+          { headers: getGitHubHeaders() }
+        );
+        if (fileResponse.ok) {
+          const fileData = await fileResponse.json();
+          if (fileData.content) {
+            fileContents[filePath] = Buffer.from(fileData.content, "base64").toString("utf-8");
+          }
+        }
+      } catch {
+        // File not found or error fetching
+      }
+    }
+
+    // Resolve anchors for each intent's chunks
+    const resolvedIntentsV2 = intentsV2.map((intent) => {
+      const resolvedChunks = intent.chunks.map((chunk) => {
+        let resolvedFile: string | null = null;
+        let resolved: { startLine: number; endLine: number; content: string; contentHash: string } | null = null;
+        let hashMatch: boolean | null = null;
+
+        for (const file of intent.frontmatter.files) {
+          const normalizedFile = file.replace(/^\.\//, '');
+          const content = fileContents[normalizedFile];
+          if (!content) continue;
+
+          const anchorResult = resolveAnchor(chunk.anchor, content);
+          if (anchorResult && anchorResult.found) {
+            resolvedFile = normalizedFile;
+            resolved = {
+              startLine: anchorResult.startLine,
+              endLine: anchorResult.endLine,
+              content: anchorResult.content,
+              contentHash: anchorResult.hash,
+            };
+            if (chunk.storedHash) {
+              hashMatch = anchorResult.hash === chunk.storedHash;
+            }
+            break;
+          }
+        }
+
+        return {
+          ...chunk,
+          resolvedFile,
+          resolved,
+          hashMatch,
+        };
+      });
+
+      // Detect overlaps
+      const overlaps = detectOverlaps(resolvedChunks);
+
+      return {
+        ...intent,
+        resolvedChunks: resolvedChunks.map(chunk => ({
+          ...chunk,
+          overlaps: overlaps.get(chunk.anchor) || [],
+        })),
+      };
+    });
+
     res.json({
       diff,
       changedFiles,
       intents: {}, // No legacy intents for GitHub
-      intentsV2: intentsV2.map((intent) => ({
-        ...intent,
-        resolvedChunks: intent.chunks.map((chunk) => ({
-          ...chunk,
-          resolved: null, // Can't resolve anchors without file content
-          hashMatch: null,
-        })),
-      })),
+      intentsV2: resolvedIntentsV2,
       manifest,
+      fileContents, // Full file content for virtual hunks
       branchInfo: {
         base,
         head,
@@ -854,12 +1147,7 @@ app.post("/api/github-discover-branches", async (req, res) => {
     // Get repo info (includes default branch)
     const repoResponse = await fetch(
       `https://api.github.com/repos/${owner}/${repo}`,
-      {
-        headers: {
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "Intent-App",
-        },
-      }
+      { headers: getGitHubHeaders() }
     );
 
     if (!repoResponse.ok) {
@@ -872,12 +1160,7 @@ app.post("/api/github-discover-branches", async (req, res) => {
     // Get all branches
     const branchesResponse = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/branches?per_page=100`,
-      {
-        headers: {
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "Intent-App",
-        },
-      }
+      { headers: getGitHubHeaders() }
     );
 
     if (!branchesResponse.ok) {
@@ -907,12 +1190,7 @@ app.post("/api/github-discover-branches", async (req, res) => {
       try {
         const manifestResponse = await fetch(
           `https://api.github.com/repos/${owner}/${repo}/contents/.intent/manifest.yaml?ref=${branch.name}`,
-          {
-            headers: {
-              Accept: "application/vnd.github.v3+json",
-              "User-Agent": "Intent-App",
-            },
-          }
+          { headers: getGitHubHeaders() }
         );
         if (manifestResponse.ok) {
           hasIntents = true;
@@ -934,12 +1212,7 @@ app.post("/api/github-discover-branches", async (req, res) => {
         try {
           const compareResponse = await fetch(
             `https://api.github.com/repos/${owner}/${repo}/compare/${defaultBranch}...${branch.name}`,
-            {
-              headers: {
-                Accept: "application/vnd.github.v3+json",
-                "User-Agent": "Intent-App",
-              },
-            }
+            { headers: getGitHubHeaders() }
           );
           if (compareResponse.ok) {
             const compareData = await compareResponse.json();
@@ -959,12 +1232,7 @@ app.post("/api/github-discover-branches", async (req, res) => {
       try {
         const commitResponse = await fetch(
           branch.commit.url,
-          {
-            headers: {
-              Accept: "application/vnd.github.v3+json",
-              "User-Agent": "Intent-App",
-            },
-          }
+          { headers: getGitHubHeaders() }
         );
         if (commitResponse.ok) {
           const commitData = await commitResponse.json();
@@ -1026,6 +1294,143 @@ app.post("/api/github-discover-branches", async (req, res) => {
           hasIntents: b.hasIntents,
           intentCount: b.intentCount,
         })),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    res.status(500).json({ error: message });
+  }
+});
+
+// Browse a GitHub repository branch (view files with intents)
+app.post("/api/github-browse", async (req, res) => {
+  const { owner, repo, branch, lang } = req.body as {
+    owner: string;
+    repo: string;
+    branch: string;
+    lang?: string;
+  };
+
+  if (!owner || !repo || !branch) {
+    return res.status(400).json({ error: "Missing owner, repo, or branch" });
+  }
+
+  try {
+    const intentsV2: IntentV2[] = [];
+    let manifest: Manifest | null = null;
+    const fileContents: Record<string, string> = {};
+    const filesSet = new Set<string>();
+
+    // Try to load intents from the branch
+    try {
+      // Check if manifest exists
+      const manifestResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/contents/.intent/manifest.yaml?ref=${branch}`,
+        { headers: getGitHubHeaders() }
+      );
+
+      if (manifestResponse.ok) {
+        const manifestData = await manifestResponse.json();
+        if (manifestData.content) {
+          const manifestContent = Buffer.from(manifestData.content, "base64").toString("utf-8");
+          manifest = parseManifest(manifestContent);
+
+          if (manifest) {
+            // Load each intent file
+            for (const intentEntry of manifest.intents) {
+              if (intentEntry.status !== "active") continue;
+
+              try {
+                const intentResponse = await fetch(
+                  `https://api.github.com/repos/${owner}/${repo}/contents/.intent/intents/${intentEntry.file}?ref=${branch}`,
+                  { headers: getGitHubHeaders() }
+                );
+
+                if (intentResponse.ok) {
+                  const intentData = await intentResponse.json();
+                  if (intentData.content) {
+                    const intentContent = Buffer.from(intentData.content, "base64").toString("utf-8");
+                    const parsed = parseIntentV2(intentContent, lang || 'en');
+                    if (parsed) {
+                      intentsV2.push(parsed);
+                      // Collect files from frontmatter
+                      for (const file of parsed.frontmatter.files) {
+                        filesSet.add(file);
+                      }
+                    }
+                  }
+                }
+              } catch {
+                // Failed to load this intent
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // No intents in this branch
+    }
+
+    const files = Array.from(filesSet);
+
+    // Fetch content for each file
+    for (const filePath of files) {
+      try {
+        const fileResponse = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${branch}`,
+          { headers: getGitHubHeaders() }
+        );
+
+        if (fileResponse.ok) {
+          const fileData = await fileResponse.json();
+          if (fileData.content) {
+            fileContents[filePath] = Buffer.from(fileData.content, "base64").toString("utf-8");
+          }
+        }
+      } catch {
+        // Failed to load file content
+      }
+    }
+
+    // Resolve chunks with file contents
+    const resolvedIntentsV2 = intentsV2.map((intent) => ({
+      ...intent,
+      resolvedChunks: intent.chunks.map((chunk) => {
+        // Try to resolve anchor in the files we have
+        for (const filePath of intent.frontmatter.files) {
+          const content = fileContents[filePath];
+          if (!content) continue;
+
+          const resolved = resolveAnchor(chunk.anchor, content);
+          if (resolved && resolved.found) {
+            return {
+              ...chunk,
+              resolved: {
+                startLine: resolved.startLine,
+                endLine: resolved.endLine,
+                content: resolved.content,
+                contentHash: resolved.hash,
+              },
+              resolvedFile: filePath,
+              hashMatch: chunk.storedHash ? chunk.storedHash === resolved.hash : null,
+            };
+          }
+        }
+
+        // Anchor not resolved
+        return {
+          ...chunk,
+          resolved: null,
+          resolvedFile: null,
+          hashMatch: null,
+        };
+      }),
+    }));
+
+    res.json({
+      intentsV2: resolvedIntentsV2,
+      files,
+      fileContents,
+      branch,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

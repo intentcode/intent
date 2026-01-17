@@ -1,5 +1,6 @@
 /**
  * Intent Parser v2 - Parses the new intent format with semantic anchors
+ * Supports multilingual content with lang prefixes (en:, fr:, etc.)
  */
 
 export interface IntentFrontmatter {
@@ -33,6 +34,92 @@ export interface IntentV2 {
   motivation?: string;
   chunks: IntentChunk[];
   raw: string;
+}
+
+/**
+ * Extract content for a specific language from multilingual text
+ * Format: lines starting with "en:", "fr:", etc.
+ * Falls back to content without prefix if language not found
+ */
+function extractLangContent(text: string, lang: string, defaultLang: string = 'en'): string {
+  const lines = text.split('\n');
+  const result: string[] = [];
+  let currentLang: string | null = null;
+  let hasLangPrefixes = false;
+
+  for (const line of lines) {
+    // Check for language prefix at start of line (en:, fr:, es:, de:)
+    const langMatch = line.match(/^(en|fr|es|de):\s*(.*)/);
+
+    if (langMatch) {
+      hasLangPrefixes = true;
+      currentLang = langMatch[1];
+      if (currentLang === lang) {
+        result.push(langMatch[2]);
+      }
+    } else if (currentLang === lang) {
+      // Continue collecting lines for current language until next lang prefix or empty line between sections
+      if (line.trim() === '' && result.length > 0) {
+        // Check if next non-empty line starts with a lang prefix
+        const nextLineIdx = lines.indexOf(line) + 1;
+        if (nextLineIdx < lines.length) {
+          const nextLine = lines[nextLineIdx];
+          if (nextLine.match(/^(en|fr|es|de):/)) {
+            currentLang = null;
+            continue;
+          }
+        }
+      }
+      result.push(line);
+    } else if (!hasLangPrefixes || currentLang === null) {
+      // No language prefixes seen yet, or we're in a neutral section
+      // This handles content without any lang prefixes
+    }
+  }
+
+  // If no content found for requested lang, try default lang
+  if (result.length === 0 && lang !== defaultLang) {
+    return extractLangContent(text, defaultLang, defaultLang);
+  }
+
+  // If still no content, return the whole text (no lang prefixes used)
+  if (result.length === 0 && !hasLangPrefixes) {
+    return text.trim();
+  }
+
+  return result.join('\n').trim();
+}
+
+/**
+ * Extract title for a specific language
+ * Format: # Title followed by # fr: Titre traduit
+ */
+function extractLangTitle(text: string, lang: string, defaultLang: string = 'en'): string {
+  const lines = text.split('\n');
+
+  // Find main title line (# Title)
+  const titleLineIdx = lines.findIndex(l => l.match(/^#\s+[^#]/));
+  if (titleLineIdx === -1) return '';
+
+  const mainTitle = lines[titleLineIdx].replace(/^#\s+/, '').trim();
+
+  // Check next line for translation (# fr: Titre)
+  if (titleLineIdx + 1 < lines.length) {
+    const nextLine = lines[titleLineIdx + 1];
+    const langTitleMatch = nextLine.match(/^#\s+(en|fr|es|de):\s*(.+)$/);
+
+    if (langTitleMatch && langTitleMatch[1] === lang) {
+      return langTitleMatch[2].trim();
+    }
+  }
+
+  // If requesting non-default lang but not found, check if main title has lang prefix
+  if (lang !== defaultLang) {
+    // Return main title as fallback
+    return mainTitle;
+  }
+
+  return mainTitle;
 }
 
 /**
@@ -101,9 +188,9 @@ function parseFrontmatter(content: string): { frontmatter: IntentFrontmatter; re
 }
 
 /**
- * Parse a single chunk
+ * Parse a single chunk with language support
  */
-function parseChunk(content: string): IntentChunk | null {
+function parseChunk(content: string, lang: string, defaultLang: string): IntentChunk | null {
   const lines = content.split('\n');
   if (lines.length === 0) return null;
 
@@ -112,15 +199,31 @@ function parseChunk(content: string): IntentChunk | null {
   if (!headerMatch) return null;
 
   const anchor = headerMatch[1];
-  const title = headerMatch[2].trim();
+  let title = headerMatch[2].trim();
+
+  // Check next line for translated title (### fr: Titre traduit)
+  if (lines.length > 1) {
+    const langTitleMatch = lines[1].match(/^###\s+(en|fr|es|de):\s*(.+)$/);
+    if (langTitleMatch && langTitleMatch[1] === lang) {
+      title = langTitleMatch[2].trim();
+    }
+  }
 
   let storedHash: string | undefined;
-  let description = '';
+  const descriptionLines: string[] = [];
   const decisions: string[] = [];
   const links: Array<{ target: string; reason: string }> = [];
 
+  let currentDescLang: string | null = null;
+  let hasLangPrefixes = false;
+
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
+
+    // Skip translated title lines
+    if (line.match(/^###\s+(en|fr|es|de):/)) {
+      continue;
+    }
 
     // Hash comment: <!-- hash: xxxx -->
     const hashMatch = line.match(/<!--\s*hash:\s*(\w+)\s*-->/);
@@ -129,10 +232,22 @@ function parseChunk(content: string): IntentChunk | null {
       continue;
     }
 
-    // Decision: > Decision: ...
+    // Decision with lang: > Decision: ... or > fr: ...
     const decisionMatch = line.match(/^>\s*Decision:\s*(.+)$/);
     if (decisionMatch) {
-      decisions.push(decisionMatch[1]);
+      // Check if this is for our language (default is en)
+      if (lang === defaultLang || lang === 'en') {
+        decisions.push(decisionMatch[1]);
+      }
+      continue;
+    }
+
+    // Translated decision: > fr: ...
+    const langDecisionMatch = line.match(/^>\s*(en|fr|es|de):\s*(.+)$/);
+    if (langDecisionMatch) {
+      if (langDecisionMatch[1] === lang) {
+        decisions.push(langDecisionMatch[2]);
+      }
       continue;
     }
 
@@ -146,10 +261,37 @@ function parseChunk(content: string): IntentChunk | null {
       continue;
     }
 
-    // Regular description line
-    if (line.trim() && !line.startsWith('#')) {
-      if (description) description += '\n';
-      description += line;
+    // Check for language prefix in description
+    const langPrefixMatch = line.match(/^(en|fr|es|de):\s*(.*)/);
+    if (langPrefixMatch) {
+      hasLangPrefixes = true;
+      currentDescLang = langPrefixMatch[1];
+      if (currentDescLang === lang) {
+        descriptionLines.push(langPrefixMatch[2]);
+      }
+      continue;
+    }
+
+    // Regular line - add if we're collecting for the right language
+    if (line.trim() && !line.startsWith('#') && !line.startsWith('>') && !line.startsWith('@')) {
+      if (!hasLangPrefixes) {
+        // No lang prefixes, collect all
+        descriptionLines.push(line);
+      } else if (currentDescLang === lang) {
+        descriptionLines.push(line);
+      }
+    } else if (line.trim() === '' && hasLangPrefixes) {
+      // Empty line might signal end of current language section
+      // Check if next non-empty line has a lang prefix
+      let nextNonEmpty = i + 1;
+      while (nextNonEmpty < lines.length && lines[nextNonEmpty].trim() === '') {
+        nextNonEmpty++;
+      }
+      if (nextNonEmpty < lines.length && lines[nextNonEmpty].match(/^(en|fr|es|de):/)) {
+        currentDescLang = null;
+      } else if (currentDescLang === lang) {
+        descriptionLines.push(line);
+      }
     }
   }
 
@@ -157,40 +299,45 @@ function parseChunk(content: string): IntentChunk | null {
     anchor,
     title,
     storedHash,
-    description: description.trim(),
+    description: descriptionLines.join('\n').trim(),
     decisions,
     links,
   };
 }
 
 /**
- * Parse intent v2 file content
+ * Parse intent v2 file content with language support
+ * @param content - Raw markdown content
+ * @param lang - Language code (en, fr, es, de). Defaults to 'en'
  */
-export function parseIntentV2(content: string): IntentV2 | null {
+export function parseIntentV2(content: string, lang: string = 'en'): IntentV2 | null {
   const parsed = parseFrontmatter(content);
   if (!parsed) return null;
 
   const { frontmatter, rest } = parsed;
+  const defaultLang = 'en';
 
-  // Parse title (# Title)
-  const titleMatch = rest.match(/^#\s+(.+)$/m);
-  const title = titleMatch ? titleMatch[1] : '';
+  // Parse title with language support
+  const title = extractLangTitle(rest, lang, defaultLang);
 
-  // Parse summary (## Summary section)
+  // Parse summary (## Summary section) with language support
   const summaryMatch = rest.match(/##\s+Summary\n([\s\S]*?)(?=\n##|\n---|\n###|$)/);
-  const summary = summaryMatch ? summaryMatch[1].trim() : '';
+  const summaryRaw = summaryMatch ? summaryMatch[1] : '';
+  const summary = extractLangContent(summaryRaw, lang, defaultLang);
 
-  // Parse motivation (## Motivation section)
+  // Parse motivation (## Motivation section) with language support
   const motivationMatch = rest.match(/##\s+Motivation\n([\s\S]*?)(?=\n##|\n---|\n###|$)/);
-  const motivation = motivationMatch ? motivationMatch[1].trim() : undefined;
+  const motivationRaw = motivationMatch ? motivationMatch[1] : '';
+  const motivation = motivationRaw ? extractLangContent(motivationRaw, lang, defaultLang) : undefined;
 
-  // Parse chunks (### @anchor | Title sections)
+  // Parse chunks (### @anchor | Title sections) with language support
   const chunks: IntentChunk[] = [];
-  const chunkPattern = /###\s+@\w+:[^\n]+[\s\S]*?(?=\n###|\n---|$)/g;
+  // Updated pattern to capture chunks including translated titles
+  const chunkPattern = /###\s+@\w+:[^\n]+[\s\S]*?(?=\n###\s+@|\n---\s*$|$)/g;
   const chunkMatches = rest.match(chunkPattern) || [];
 
   for (const chunkContent of chunkMatches) {
-    const chunk = parseChunk(chunkContent);
+    const chunk = parseChunk(chunkContent, lang, defaultLang);
     if (chunk) {
       chunks.push(chunk);
     }
@@ -200,7 +347,7 @@ export function parseIntentV2(content: string): IntentV2 | null {
     frontmatter,
     title,
     summary,
-    motivation,
+    motivation: motivation || undefined,
     chunks,
     raw: content,
   };

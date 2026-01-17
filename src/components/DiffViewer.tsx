@@ -1,6 +1,5 @@
 import { useState, useMemo, useLayoutEffect, useRef, useCallback } from "react";
 import type { DiffFile, DiffHunk } from "../lib/parseDiff";
-import type { Session, ChunkLink, ChunkReplaces } from "../lib/parseIntent";
 import type { ResolvedChunkAPI } from "../lib/api";
 import Prism from "prismjs";
 import "prismjs/components/prism-python";
@@ -78,7 +77,6 @@ type ViewMode = "diff" | "browse";
 
 interface DiffViewerProps {
   file?: DiffFile;
-  session?: Session;
   filename: string;
   onLinkClick?: (targetFile: string, targetRange: string) => void;
   // For intents-only mode (no git diff)
@@ -157,7 +155,7 @@ const DEFAULT_TRANSLATIONS: Translations = {
   deepDiveTooltip: "Copy context to explore this chunk with Claude",
 };
 
-export function DiffViewer({ file, session, filename, onLinkClick, resolvedChunks, intentTitle, fullFileContent, viewMode = "diff", translations = DEFAULT_TRANSLATIONS }: DiffViewerProps) {
+export function DiffViewer({ file, filename, onLinkClick, resolvedChunks, intentTitle, fullFileContent, viewMode = "diff", translations = DEFAULT_TRANSLATIONS }: DiffViewerProps) {
   const [expandedChunks, setExpandedChunks] = useState<Set<string>>(new Set());
   const [chunkHeights, setChunkHeights] = useState<Map<string, number>>(new Map());
   const [activeChunk, setActiveChunk] = useState<string | null>(null);
@@ -253,9 +251,7 @@ ${t.promptQuestionPlaceholder}
   // Detect language for syntax highlighting
   const language = useMemo(() => detectLanguage(filename), [filename]);
 
-  // Use v2 resolved chunks if available, otherwise fall back to v1 session chunks
   const hasV2Chunks = resolvedChunks && resolvedChunks.length > 0;
-  const chunks = useMemo(() => session?.chunks || [], [session?.chunks]);
 
   // Build line maps - for browse mode, simple 1:1 mapping; for diff mode, from hunks
   const lineMaps = useMemo(() => {
@@ -367,25 +363,10 @@ ${t.promptQuestionPlaceholder}
       for (let i = 0; i < resolvedChunks.length; i++) {
         positions.push(tempPositions.get(i) || 0);
       }
-    } else if (isDiffMode && chunks.length > 0) {
-      // Fallback to v1 chunks
-      let lastBottom = 0;
-      chunks.forEach((chunk) => {
-        const map = chunk.isDeletion ? lineMaps.oldLineMap : lineMaps.newLineMap;
-        const rowIndex = map.get(chunk.startLine) ?? 0;
-        const idealTop = rowIndex * LINE_HEIGHT;
-
-        const actualTop = Math.max(idealTop, lastBottom + MIN_GAP_BETWEEN_CARDS);
-        positions.push(actualTop);
-
-        const chunkId = chunk.lineRange;
-        const height = chunkHeights.get(chunkId) || COLLAPSED_CARD_HEIGHT;
-        lastBottom = actualTop + height;
-      });
     }
 
     return positions;
-  }, [isDiffMode, isBrowseMode, hasV2Chunks, chunks, resolvedChunks, lineMaps, chunkHeights]);
+  }, [isDiffMode, isBrowseMode, hasV2Chunks, resolvedChunks, lineMaps, chunkHeights]);
 
   // Build chunk targets for connectors and highlighting
   const chunkTargets = useMemo<ChunkTarget[]>(() => {
@@ -402,19 +383,10 @@ ${t.promptQuestionPlaceholder}
           });
         }
       });
-    } else if (isDiffMode && chunks.length > 0) {
-      chunks.forEach((chunk, i) => {
-        targets.push({
-          chunkId: chunk.lineRange,
-          startLine: chunk.startLine,
-          endLine: chunk.endLine,
-          topPosition: calculatePositions[i] || 0,
-        });
-      });
     }
 
     return targets;
-  }, [hasV2Chunks, resolvedChunks, isDiffMode, chunks, calculatePositions]);
+  }, [hasV2Chunks, resolvedChunks, calculatePositions]);
 
   // Handle chunk activation (click or hover)
   const handleChunkActivate = useCallback((chunkId: string, startLine: number, endLine: number) => {
@@ -441,31 +413,6 @@ ${t.promptQuestionPlaceholder}
     setActiveChunk(null);
     setHighlightedLines(new Set());
   }, []);
-
-  const renderLink = (link: ChunkLink, index: number) => (
-    <div
-      key={index}
-      className="chunk-link"
-      onClick={(e) => {
-        e.stopPropagation();
-        onLinkClick?.(link.targetFile, link.targetRange);
-      }}
-    >
-      <span className="link-icon">↗</span>
-      <span className="link-target">{link.targetFile}#{link.targetRange}</span>
-      <span className="link-reason">{link.reason}</span>
-    </div>
-  );
-
-  const renderReplaces = (replaces: ChunkReplaces, index: number) => (
-    <div key={index} className="chunk-replaces">
-      <span className="replaces-icon">⊖</span>
-      <span className="replaces-range">
-        {replaces.oldFile ? `${replaces.oldFile}#` : ""}{replaces.oldRange}
-      </span>
-      <span className="replaces-reason">{replaces.reason}</span>
-    </div>
-  );
 
   const handleLinkClick = (targetAnchor: string) => {
     // Find the target chunk by anchor
@@ -501,20 +448,31 @@ ${t.promptQuestionPlaceholder}
   };
 
   const renderResolvedLink = (link: { target: string; reason: string }, index: number) => {
-    const isInternal = resolvedChunks?.some(c => c.anchor === link.target);
+    // Parse cross-file links: "file.py@function:name" or just "@function:name"
+    const crossFileMatch = link.target.match(/^([^@]+)(@.+)$/);
+    const targetFile = crossFileMatch ? crossFileMatch[1] : null;
+    const targetAnchor = crossFileMatch ? crossFileMatch[2] : link.target;
+
+    const isInternal = resolvedChunks?.some(c => c.anchor === targetAnchor);
+    const isCrossFile = !!targetFile;
+    const isChunkRef = targetAnchor.startsWith('@chunk:');
+
+    // Determine link type for styling
+    const linkType = isChunkRef ? 'chunk' : isCrossFile ? 'external' : isInternal ? 'internal' : 'unresolved';
+
     return (
       <div
         key={index}
-        className={`chunk-link ${isInternal ? 'clickable' : ''}`}
+        className={`chunk-link ${isInternal && !isCrossFile ? 'clickable' : ''} link-type-${linkType}`}
         onClick={(e) => {
-          if (isInternal) {
+          if (isInternal && !isCrossFile) {
             e.stopPropagation();
-            handleLinkClick(link.target);
+            handleLinkClick(targetAnchor);
           }
         }}
         onMouseEnter={() => {
-          if (isInternal) {
-            const targetChunk = resolvedChunks?.find(c => c.anchor === link.target);
+          if (isInternal && !isCrossFile) {
+            const targetChunk = resolvedChunks?.find(c => c.anchor === targetAnchor);
             if (targetChunk?.resolved) {
               const lines = new Set<number>();
               for (let i = targetChunk.resolved.startLine; i <= targetChunk.resolved.endLine; i++) {
@@ -528,8 +486,11 @@ ${t.promptQuestionPlaceholder}
           setHighlightedLines(new Set());
         }}
       >
-        <span className="link-icon">{isInternal ? '↓' : '↗'}</span>
-        <span className="link-target">{link.target}</span>
+        <span className="link-icon">
+          {isChunkRef ? '📎' : isCrossFile ? '📁' : isInternal ? '↓' : '↗'}
+        </span>
+        {targetFile && <span className="link-file">{targetFile}</span>}
+        <span className="link-target">{targetAnchor}</span>
         <span className="link-reason">{link.reason}</span>
       </div>
     );
@@ -543,10 +504,10 @@ ${t.promptQuestionPlaceholder}
     const lastIdx = calculatePositions.length - 1;
     const lastChunkId = hasV2Chunks
       ? resolvedChunks?.[lastIdx]?.anchor
-      : chunks[lastIdx]?.lineRange;
+      : undefined;
     const lastHeight = lastChunkId ? (chunkHeights.get(lastChunkId) || COLLAPSED_CARD_HEIGHT) : COLLAPSED_CARD_HEIGHT;
     return calculatePositions[lastIdx] + lastHeight + 20;
-  }, [calculatePositions, chunkHeights, hasV2Chunks, chunks, resolvedChunks]);
+  }, [calculatePositions, chunkHeights, hasV2Chunks, resolvedChunks]);
 
   return (
     <div className={`diff-viewer ${hasStaleChunks ? 'has-stale' : ''}`}>
@@ -687,81 +648,67 @@ ${t.promptQuestionPlaceholder}
           style={{ minHeight: panelMinHeight > 0 ? panelMinHeight : undefined }}
         >
           <div className="explanation-scroll-container">
-            {/* Diff mode: v1 chunks from session (only if no v2 chunks) */}
-            {isDiffMode && !hasV2Chunks && chunks.map((chunk, i) => {
-              const isExpanded = expandedChunks.has(chunk.lineRange);
-              const topPosition = calculatePositions[i] || 0;
-              const chunkId = chunk.lineRange;
-              const hasContent = chunk.description?.trim() || chunk.decisions.length > 0 || chunk.links.length > 0 || chunk.replaces.length > 0;
-
-              return (
-                <div
-                  key={i}
-                  id={`chunk-${filename}-${chunkId}`}
-                  ref={(el) => {
-                    if (el) chunkRefs.current.set(chunkId, el);
-                  }}
-                  className={`chunk-card ${isExpanded ? 'expanded' : ''}`}
-                  style={{ position: "absolute", top: topPosition }}
-                >
-                  <div
-                    className="chunk-card-header"
-                    onClick={() => toggleChunk(chunkId)}
-                  >
-                    <span className="chunk-line-range">{chunk.lineRange}</span>
-                    <span className="chunk-title">{chunk.title}</span>
-                    <span className="chunk-toggle">{isExpanded ? "▼" : "▶"}</span>
-                  </div>
-                  {isExpanded && hasContent && (
-                    <div className="chunk-card-body">
-                      {chunk.description?.trim() && (
-                        <p className="chunk-description">{chunk.description}</p>
-                      )}
-                      {chunk.decisions.length > 0 && (
-                        <div className="chunk-decisions">
-                          {chunk.decisions.map((d, j) => (
-                            <div key={j} className="decision">
-                              <span className="decision-arrow">→</span> {d.text}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {chunk.replaces.length > 0 && (
-                        <div className="chunk-replaces-section">
-                          <div className="replaces-label">Remplace:</div>
-                          {chunk.replaces.map((r, j) => renderReplaces(r, j))}
-                        </div>
-                      )}
-                      {chunk.links.length > 0 && (
-                        <div className="chunk-links">
-                          <div className="links-label">Liens:</div>
-                          {chunk.links.map((link, j) => renderLink(link, j))}
-                        </div>
-                      )}
-                      {/* Note: Deep dive not available for V1 chunks - need resolved anchor */}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
             {/* V2 resolved chunks - in diff mode, only show chunks visible in diff; in browse mode, show all */}
             {hasV2Chunks && resolvedChunks && resolvedChunks.map((chunk, i) => {
-              if (!chunk.resolved) return null;
-
-              // In diff mode, only show chunks whose lines are in the diff
-              // In browse mode, show all chunks
-              const isVisibleInDiff = lineMaps.newLineMap.has(chunk.resolved.startLine);
-              if (isDiffMode && !isVisibleInDiff) return null;
-
+              const isObsolete = !chunk.resolved;
               const isExpanded = expandedChunks.has(chunk.anchor);
               const topPosition = calculatePositions[i] || 0;
               const chunkId = chunk.anchor;
-              const isStale = chunk.hashMatch === false;
+              const isStale = !isObsolete && chunk.hashMatch === false;
               const isActive = activeChunk === chunkId;
 
-              // Get isNew from extended chunk (added in App.tsx)
+              // Get isNew and isHighlighted from extended chunk (added in App.tsx)
               const isNewIntent = (chunk as { isNew?: boolean }).isNew ?? false;
+              const isChunkHighlighted = (chunk as { isHighlighted?: boolean }).isHighlighted ?? true;
+              const chunkOverlaps = chunk.overlaps || [];
+              const hasOverlaps = chunkOverlaps.length > 0;
+
+              // Unresolved chunks: show documentation without code linking
+              if (isObsolete) {
+                return (
+                  <div
+                    key={i}
+                    id={`chunk-${filename}-${chunkId}`}
+                    ref={(el) => {
+                      if (el) chunkRefs.current.set(chunkId, el);
+                    }}
+                    className={`chunk-card unresolved ${isExpanded ? 'expanded' : ''} ${!isChunkHighlighted ? 'dimmed' : ''}`}
+                    style={{ position: "absolute", top: topPosition }}
+                  >
+                    <div
+                      className="chunk-card-header"
+                      onClick={() => toggleChunk(chunkId)}
+                    >
+                      <span className="chunk-title">{chunk.title}</span>
+                      <span className="chunk-toggle">{isExpanded ? "▼" : "▶"}</span>
+                    </div>
+                    {isExpanded && (
+                      <div className="chunk-card-body">
+                        {chunk.description?.trim() && (
+                          <p className="chunk-description">{chunk.description}</p>
+                        )}
+                        {chunk.decisions && chunk.decisions.length > 0 && (
+                          <div className="chunk-decisions">
+                            {chunk.decisions.map((decision, idx) => (
+                              <div key={idx} className="chunk-decision">
+                                <span className="decision-icon">💡</span>
+                                <span>{decision}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <p className="chunk-anchor-info">
+                          <code>{chunk.anchor}</code>
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
+              // In diff mode, only show chunks whose lines are visible in the diff
+              const isVisibleInDiff = lineMaps.newLineMap.has(chunk.resolved!.startLine);
+              if (isDiffMode && !isVisibleInDiff) return null;
 
               return (
                 <div
@@ -770,7 +717,7 @@ ${t.promptQuestionPlaceholder}
                   ref={(el) => {
                     if (el) chunkRefs.current.set(chunkId, el);
                   }}
-                  className={`chunk-card ${isExpanded ? 'expanded' : ''} ${isStale ? 'stale' : ''} ${isActive ? 'active' : ''}`}
+                  className={`chunk-card ${isExpanded ? 'expanded' : ''} ${isStale ? 'stale' : ''} ${isActive ? 'active' : ''} ${!isChunkHighlighted ? 'dimmed' : ''} ${hasOverlaps ? 'has-overlap' : ''}`}
                   style={{ position: "absolute", top: topPosition }}
                   onMouseEnter={() => handleChunkActivate(chunkId, chunk.resolved!.startLine, chunk.resolved!.endLine)}
                   onMouseLeave={handleChunkDeactivate}
@@ -783,11 +730,21 @@ ${t.promptQuestionPlaceholder}
                     }}
                   >
                     <span className="chunk-line-range">
-                      L{chunk.resolved.startLine}-{chunk.resolved.endLine}
+                      L{chunk.resolved!.startLine}-{chunk.resolved!.endLine}
                     </span>
                     <span className={isNewIntent ? "intent-new-badge" : "intent-existing-badge"}>
                       {isNewIntent ? translations.new : translations.existing}
                     </span>
+                    {hasOverlaps && (
+                      <span className="overlap-badge" title={`Overlaps with: ${chunkOverlaps.join(', ')}`}>
+                        OVERLAP
+                      </span>
+                    )}
+                    {chunk.links && chunk.links.length > 0 && (
+                      <span className="links-badge" title={`${chunk.links.length} link(s)`}>
+                        🔗 {chunk.links.length}
+                      </span>
+                    )}
                     <span className="chunk-title">{chunk.title}</span>
                     <span className="chunk-toggle">{isExpanded ? "▼" : "▶"}</span>
                   </div>
@@ -809,6 +766,14 @@ ${t.promptQuestionPlaceholder}
                         <div className="chunk-links">
                           <div className="links-label">Liens:</div>
                           {chunk.links.map((link, j) => renderResolvedLink(link, j))}
+                        </div>
+                      )}
+                      {hasOverlaps && (
+                        <div className="chunk-overlaps">
+                          <div className="overlaps-label">⚠️ Chevauche:</div>
+                          {chunkOverlaps.map((overlap, j) => (
+                            <span key={j} className="overlap-anchor">{overlap}</span>
+                          ))}
                         </div>
                       )}
                       <button
