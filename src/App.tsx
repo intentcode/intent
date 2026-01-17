@@ -1058,8 +1058,16 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
       {/* General error display */}
       {error && !needsAuth && !loading && (
         <div className="error-banner">
-          <div className="error-icon">⚠️</div>
-          <div className="error-message">{error}</div>
+          <div className="error-icon">😵</div>
+          <div className="error-title">{t("errorTitle")}</div>
+          <div className="error-message">{t("errorMessage")}</div>
+          <div className="error-details">{error}</div>
+          <button
+            className="error-retry-btn"
+            onClick={() => window.location.reload()}
+          >
+            {t("retry")}
+          </button>
         </div>
       )}
 

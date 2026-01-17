@@ -1,4 +1,5 @@
-const API_BASE = "http://localhost:3001";
+// In production (Vercel), use relative paths. In dev, use localhost:3001
+const API_BASE = import.meta.env.DEV ? "http://localhost:3001" : "";
 
 // Custom error for API responses that need authentication
 export class AuthRequiredError extends Error {
