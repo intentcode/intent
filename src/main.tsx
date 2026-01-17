@@ -1,13 +1,42 @@
-import { StrictMode, useState } from 'react'
+import { StrictMode, useState, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
 import { LandingPage } from './components/LandingPage.tsx'
+import { initLanguage, setStoredLanguage, type Language } from './lib/language'
 
 function LandingWrapper() {
-  const [lang, setLang] = useState<"en" | "fr">("en");
-  return <LandingPage lang={lang} onLangChange={setLang} />;
+  const [lang, setLang] = useState<Language>(() => initLanguage());
+
+  const handleLangChange = (newLang: Language) => {
+    setLang(newLang);
+    setStoredLanguage(newLang);
+  };
+
+  return <LandingPage lang={lang} onLangChange={handleLangChange} />;
+}
+
+function AppWrapper({ mode }: { mode: "home" | "github-pr" | "github-compare" | "github-browse" }) {
+  const [lang, setLang] = useState<Language>(() => initLanguage());
+
+  // Listen for language changes from other components
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'intent-lang' && e.newValue) {
+        setLang(e.newValue as Language);
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
+  const handleLangChange = (newLang: Language) => {
+    setLang(newLang);
+    setStoredLanguage(newLang);
+  };
+
+  return <App mode={mode} lang={lang} onLangChange={handleLangChange} />;
 }
 
 const router = createBrowserRouter([
@@ -21,23 +50,23 @@ const router = createBrowserRouter([
   },
   {
     path: "/local",
-    element: <App mode="home" />,
+    element: <AppWrapper mode="home" />,
   },
   {
     path: "/:owner/:repo/pull/:prNumber",
-    element: <App mode="github-pr" />,
+    element: <AppWrapper mode="github-pr" />,
   },
   {
     path: "/:owner/:repo/compare/:base...:head",
-    element: <App mode="github-compare" />,
+    element: <AppWrapper mode="github-compare" />,
   },
   {
     path: "/:owner/:repo/tree/:branch",
-    element: <App mode="github-browse" />,
+    element: <AppWrapper mode="github-browse" />,
   },
   {
     path: "/:owner/:repo",
-    element: <App mode="github-browse" />,
+    element: <AppWrapper mode="github-browse" />,
   },
 ])
 
