@@ -149,11 +149,19 @@ export async function fetchDiff(
   return res.json();
 }
 
+export interface RepoInfo {
+  description: string | null;
+  stars: number;
+  language: string | null;
+  topics: string[];
+}
+
 export interface BrowseResponse {
   intentsV2: IntentV2API[];
   files: string[];
   fileContents: Record<string, string>;
   branch: string;
+  repoInfo?: RepoInfo;
 }
 
 export async function fetchBrowse(

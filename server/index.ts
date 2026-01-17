@@ -1319,6 +1319,26 @@ app.post("/api/github-browse", async (req, res) => {
     let manifest: Manifest | null = null;
     const fileContents: Record<string, string> = {};
     const filesSet = new Set<string>();
+    let repoInfo: { description: string | null; stars: number; language: string | null; topics: string[] } | null = null;
+
+    // Fetch repo info (description, stars, language, topics)
+    try {
+      const repoResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}`,
+        { headers: getGitHubHeaders() }
+      );
+      if (repoResponse.ok) {
+        const repoData = await repoResponse.json();
+        repoInfo = {
+          description: repoData.description,
+          stars: repoData.stargazers_count,
+          language: repoData.language,
+          topics: repoData.topics || [],
+        };
+      }
+    } catch {
+      // Failed to fetch repo info
+    }
 
     // Try to load intents from the branch
     try {
@@ -1431,6 +1451,7 @@ app.post("/api/github-browse", async (req, res) => {
       files,
       fileContents,
       branch,
+      repoInfo,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
