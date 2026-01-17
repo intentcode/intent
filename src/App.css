@@ -4389,25 +4389,61 @@ body {
 
 .error-banner {
   display: flex;
+  flex-direction: column;
   align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  padding: 3rem;
   gap: 1rem;
-  max-width: 600px;
-  margin: 4rem auto;
-  padding: 1.5rem;
-  background: rgba(248, 81, 73, 0.1);
-  border: 1px solid rgba(248, 81, 73, 0.3);
-  border-radius: 8px;
+  animation: fadeIn 0.2s ease-out;
 }
 
 .error-icon {
-  font-size: 1.5rem;
-  flex-shrink: 0;
+  font-size: 3.5rem;
+  opacity: 0.8;
+}
+
+.error-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #f85149;
 }
 
 .error-message {
-  font-size: 0.9375rem;
-  color: #f85149;
+  font-size: 0.875rem;
+  color: #8b949e;
   line-height: 1.5;
+  text-align: center;
+  max-width: 450px;
+}
+
+.error-details {
+  font-size: 0.75rem;
+  color: #6e7681;
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.2);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  font-family: ui-monospace, monospace;
+  max-width: 500px;
+  word-break: break-word;
+}
+
+.error-retry-btn {
+  margin-top: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  background: rgba(136, 87, 255, 0.15);
+  border: 1px solid rgba(136, 87, 255, 0.3);
+  border-radius: 6px;
+  color: #a78bfa;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.error-retry-btn:hover {
+  background: rgba(136, 87, 255, 0.25);
+  border-color: rgba(136, 87, 255, 0.5);
 }
 
 @media (max-width: 768px) {
