@@ -17,7 +17,7 @@
 | **Settings URL** | https://github.com/settings/applications/3342234 |
 | **Client ID** | (see Vercel env vars) |
 | **Client Secret** | (see Vercel env vars) |
-| **Callback URL** | `https://intent-app.vercel.app/api/auth/callback` |
+| **Callback URL** | `https://intent-code.vercel.app/api/auth/callback` |
 | **Scopes** | `repo`, `read:user` |
 
 ### To regenerate Client Secret:
@@ -32,9 +32,9 @@
 | Field | Value |
 |-------|-------|
 | **Account** | berenger.ouadi@gmail.com (Google) |
-| **Project** | intent |
-| **Dashboard** | https://vercel.com/berengerouadis-projects/intent |
-| **Production URL** | https://intent-app.vercel.app |
+| **Project** | intent-code |
+| **Dashboard** | https://vercel.com/berengerouadis-projects/intent-code |
+| **Production URL** | https://intent-code.vercel.app |
 | **Framework** | Vite |
 | **Build Command** | `npm run build` |
 | **Output Directory** | `dist` |
