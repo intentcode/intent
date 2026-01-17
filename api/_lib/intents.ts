@@ -1,8 +1,8 @@
 // Re-export from src for Vercel functions
-export { parseIntentV2, parseManifest } from '../../src/lib/parseIntentV2';
-export type { IntentV2, Manifest, IntentChunk } from '../../src/lib/parseIntentV2';
-export { resolveAnchor } from '../../src/lib/anchorResolver';
-export type { AnchorResult } from '../../src/lib/anchorResolver';
+export { parseIntentV2, parseManifest } from '../../src/lib/parseIntentV2.js';
+export type { IntentV2, Manifest, IntentChunk } from '../../src/lib/parseIntentV2.js';
+export { resolveAnchor } from '../../src/lib/anchorResolver.js';
+export type { AnchorResult } from '../../src/lib/anchorResolver.js';
 
 // Detect overlapping chunks within the same file
 interface ChunkWithFile {
