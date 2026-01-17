@@ -1,16 +1,26 @@
-import { StrictMode } from 'react'
+import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
+import { LandingPage } from './components/LandingPage.tsx'
+
+function LandingWrapper() {
+  const [lang, setLang] = useState<"en" | "fr">("en");
+  return <LandingPage lang={lang} onLangChange={setLang} />;
+}
 
 const router = createBrowserRouter([
   {
     path: "/",
-    element: <App mode="home" />,
+    element: <LandingWrapper />,
   },
   {
     path: "/home",
+    element: <LandingWrapper />,
+  },
+  {
+    path: "/local",
     element: <App mode="home" />,
   },
   {

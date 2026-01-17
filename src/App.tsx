@@ -4,7 +4,7 @@ import { parseDiff } from "./lib/parseDiff";
 import type { DiffFile, DiffHunk, DiffLine } from "./lib/parseDiff";
 import { DiffViewer } from "./components/DiffViewer";
 import { RepoSelector } from "./components/RepoSelector";
-import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, fetchGitHubBrowse, type DiffMode, type IntentV2API } from "./lib/api";
+import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, fetchGitHubBrowse, AuthRequiredError, type DiffMode, type IntentV2API } from "./lib/api";
 import { getCurrentUser, loginWithGitHub, logout, type User } from "./lib/auth";
 import "./App.css";
 
@@ -286,6 +286,7 @@ function App({ mode }: AppProps) {
   const [selectedIntentId, setSelectedIntentId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [needsAuth, setNeedsAuth] = useState(false);
   const [diffRequested, setDiffRequested] = useState(false);
   const [diffContext, setDiffContext] = useState<DiffContext | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -768,7 +769,13 @@ function App({ mode }: AppProps) {
       setChangedFiles(response.changedFiles || []);
       setAllFileContents(response.fileContents || {});
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load GitHub PR");
+      if (err instanceof AuthRequiredError) {
+        setNeedsAuth(true);
+        setError(err.message);
+      } else {
+        setNeedsAuth(false);
+        setError(err instanceof Error ? err.message : "Failed to load GitHub PR");
+      }
     } finally {
       setLoading(false);
     }
@@ -1134,6 +1141,37 @@ function App({ mode }: AppProps) {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Auth required error - show login prompt */}
+      {error && needsAuth && !loading && (
+        <div className="auth-required-banner">
+          <div className="auth-required-icon">🔒</div>
+          <div className="auth-required-content">
+            <div className="auth-required-title">
+              {lang === "fr" ? "Authentification requise" : "Authentication Required"}
+            </div>
+            <div className="auth-required-desc">
+              {lang === "fr"
+                ? "Ce dépôt est peut-être privé. Connectez-vous avec GitHub pour y accéder."
+                : "This repository may be private. Please login with GitHub to access it."}
+            </div>
+          </div>
+          <button
+            onClick={() => loginWithGitHub(window.location.pathname)}
+            className="auth-required-btn"
+          >
+            {lang === "fr" ? "Se connecter avec GitHub" : "Login with GitHub"}
+          </button>
+        </div>
+      )}
+
+      {/* General error display */}
+      {error && !needsAuth && !loading && (
+        <div className="error-banner">
+          <div className="error-icon">⚠️</div>
+          <div className="error-message">{error}</div>
         </div>
       )}
 
