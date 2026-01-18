@@ -78,7 +78,22 @@ npm run dev:all    # Start both frontend and backend
 npm run dev        # Frontend only (port 5173)
 npm run server     # Backend only (port 3001)
 npm run build      # Production build
+npm run test:run   # Run all tests
+npm run check      # Build + tests (pre-commit check)
 ```
+
+## Deployment (Vercel)
+
+Production is deployed on Vercel at https://intent-code.vercel.app
+
+**Branch strategy:**
+- Only the `main` branch is deployed to production
+- Feature branches trigger builds but don't affect production URL
+- Config: `vercel.json` with `git.deploymentEnabled.main: true`
+
+**Important for API functions:**
+- All imports in `/api/*.ts` must use `.js` extensions (ESM requirement)
+- Example: `import { foo } from './_lib/bar.js'` (not `.ts`)
 
 ## Intent v2 Format
 

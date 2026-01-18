@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getAuthFromRequest, getGitHubHeaders } from './_lib/github';
-import { parseIntentV2, parseManifest, resolveAnchor, detectOverlaps } from './_lib/intents';
-import type { IntentV2, Manifest } from './_lib/intents';
+import { getAuthFromRequest, getGitHubHeaders } from './_lib/github.js';
+import { parseIntentV2, parseManifest, resolveAnchor, detectOverlaps } from './_lib/intents.js';
+import type { IntentV2, Manifest } from './_lib/intents.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
