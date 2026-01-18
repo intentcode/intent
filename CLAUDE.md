@@ -82,6 +82,32 @@ npm run test:run   # Run all tests
 npm run check      # Build + tests (pre-commit check)
 ```
 
+## Local Development
+
+**Required ports (do not change):**
+- Frontend: `5173` (Vite default)
+- Backend: `3001` ← **Required for GitHub OAuth callback**
+
+**Setup:**
+1. Copy `env.example` to `.env`
+2. Create a GitHub OAuth App for local dev:
+   - Go to https://github.com/settings/developers → "New OAuth App"
+   - **Name**: `Intent - Local Dev`
+   - **Homepage**: `http://localhost:5173`
+   - **Callback**: `http://localhost:3001/api/auth/callback`
+3. Fill `.env` with your OAuth credentials
+4. Run `npm run dev:all`
+
+**Environment variables:**
+```bash
+GITHUB_CLIENT_ID=xxx        # OAuth app client ID
+GITHUB_CLIENT_SECRET=xxx    # OAuth app client secret
+JWT_SECRET=xxx              # Session secret (openssl rand -hex 32)
+GITHUB_TOKEN=ghp_xxx        # Optional: increases API rate limit
+DEFAULT_REPO=owner/repo     # Optional: default GitHub repo on landing
+DEFAULT_REPO_PATH=/path/to  # Optional: default local repo for /local mode
+```
+
 ## Deployment (Vercel)
 
 Production is deployed on Vercel at https://intent-code.vercel.app
@@ -94,6 +120,10 @@ Production is deployed on Vercel at https://intent-code.vercel.app
 **Important for API functions:**
 - All imports in `/api/*.ts` must use `.js` extensions (ESM requirement)
 - Example: `import { foo } from './_lib/bar.js'` (not `.ts`)
+
+**OAuth Apps (2 required):**
+- **Production**: https://github.com/settings/applications/3342234 → callback `https://intent-code.vercel.app/api/auth/callback`
+- **Local dev**: https://github.com/settings/applications/3343667 → callback `http://localhost:3001/api/auth/callback`
 
 ## Intent v2 Format
 

@@ -5,6 +5,8 @@ import { execSync } from "child_process";
 import { readFileSync, existsSync, readdirSync, statSync } from "fs";
 import path from "path";
 import os from "os";
+import { randomBytes } from "crypto";
+import { SignJWT, jwtVerify } from "jose";
 import {
   parseIntentV2,
   parseManifest,
@@ -19,14 +21,25 @@ const PORT = 3001;
 // GitHub API token (optional, increases rate limit from 60 to 5000 requests/hour)
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
+// OAuth configuration
+const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
+const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
+
+// Default repo for local development (optional)
+const DEFAULT_REPO = process.env.DEFAULT_REPO; // GitHub repo (e.g., "intentcode/intent")
+const DEFAULT_REPO_PATH = process.env.DEFAULT_REPO_PATH; // Local path (e.g., "/Users/me/projects/intent")
+
 // Helper to get GitHub API headers
-function getGitHubHeaders(accept: string = "application/vnd.github.v3+json"): Record<string, string> {
+function getGitHubHeaders(accept: string = "application/vnd.github.v3+json", userToken?: string): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: accept,
     "User-Agent": "Intent-App",
   };
-  if (GITHUB_TOKEN) {
-    headers["Authorization"] = `Bearer ${GITHUB_TOKEN}`;
+  // Prefer user's OAuth token, fallback to server token
+  const token = userToken || GITHUB_TOKEN;
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
   }
   return headers;
 }
@@ -89,8 +102,176 @@ function detectOverlaps(chunks: ChunkWithFile[]): Map<string, string[]> {
   return overlaps;
 }
 
-app.use(cors());
+app.use(cors({
+  origin: 'http://localhost:5173',
+  credentials: true,
+}));
 app.use(express.json());
+
+// ============================================
+// AUTH ROUTES (for local development)
+// ============================================
+
+// Helper to get user from JWT cookie
+async function getAuthUser(cookies: string | undefined): Promise<{ user: { id: string; login: string; name: string | null; avatar: string }; githubToken: string } | null> {
+  if (!cookies) return null;
+  const tokenMatch = cookies.match(/intent_token=([^;]+)/);
+  if (!tokenMatch) return null;
+
+  try {
+    const secret = new TextEncoder().encode(JWT_SECRET);
+    const { payload } = await jwtVerify(tokenMatch[1], secret);
+    return {
+      user: {
+        id: payload.sub as string,
+        login: payload.login as string,
+        name: payload.name as string | null,
+        avatar: payload.avatar as string,
+      },
+      githubToken: payload.github_token as string,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// GET /api/auth/github - Redirect to GitHub OAuth
+app.get("/api/auth/github", (req, res) => {
+  if (!GITHUB_CLIENT_ID) {
+    return res.status(500).json({ error: "GitHub OAuth not configured" });
+  }
+
+  const redirectParam = (req.query.redirect as string) || "/";
+  let redirectUrl = "/";
+  if (redirectParam.startsWith("/") && !redirectParam.startsWith("//")) {
+    redirectUrl = redirectParam;
+  }
+
+  const nonce = randomBytes(16).toString("hex");
+  const state = Buffer.from(JSON.stringify({ redirect: redirectUrl, nonce })).toString("base64");
+
+  res.setHeader("Set-Cookie", [
+    `intent_oauth_nonce=${nonce}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`,
+  ]);
+
+  const githubAuthUrl = new URL("https://github.com/login/oauth/authorize");
+  githubAuthUrl.searchParams.set("client_id", GITHUB_CLIENT_ID);
+  githubAuthUrl.searchParams.set("scope", "repo read:user");
+  githubAuthUrl.searchParams.set("state", state);
+
+  res.redirect(302, githubAuthUrl.toString());
+});
+
+// GET /api/auth/callback - OAuth callback from GitHub
+app.get("/api/auth/callback", async (req, res) => {
+  const { code, state } = req.query;
+
+  if (!code || typeof code !== "string") {
+    return res.status(400).json({ error: "Missing code parameter" });
+  }
+
+  if (!GITHUB_CLIENT_ID || !GITHUB_CLIENT_SECRET) {
+    return res.status(500).json({ error: "GitHub OAuth not configured" });
+  }
+
+  const cookies = req.headers.cookie || "";
+  const nonceMatch = cookies.match(/intent_oauth_nonce=([^;]+)/);
+  const cookieNonce = nonceMatch ? nonceMatch[1] : null;
+
+  let redirectUrl = "/";
+  if (state && typeof state === "string") {
+    try {
+      const stateData = JSON.parse(Buffer.from(state, "base64").toString());
+      if (!cookieNonce || cookieNonce !== stateData.nonce) {
+        return res.status(403).json({ error: "Invalid state - possible CSRF attack" });
+      }
+      if (stateData.redirect && stateData.redirect.startsWith("/") && !stateData.redirect.startsWith("//")) {
+        redirectUrl = stateData.redirect;
+      }
+    } catch {
+      return res.status(400).json({ error: "Invalid state parameter" });
+    }
+  } else {
+    return res.status(400).json({ error: "Missing state parameter" });
+  }
+
+  try {
+    const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        client_id: GITHUB_CLIENT_ID,
+        client_secret: GITHUB_CLIENT_SECRET,
+        code,
+      }),
+    });
+
+    const tokenData = await tokenResponse.json();
+    if (tokenData.error) {
+      return res.status(400).json({ error: tokenData.error_description || tokenData.error });
+    }
+
+    const accessToken = tokenData.access_token;
+
+    const userResponse = await fetch("https://api.github.com/user", {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/vnd.github.v3+json" },
+    });
+
+    const userData = await userResponse.json();
+
+    const secret = new TextEncoder().encode(JWT_SECRET);
+    const jwt = await new SignJWT({
+      sub: userData.id.toString(),
+      login: userData.login,
+      name: userData.name,
+      avatar: userData.avatar_url,
+      github_token: accessToken,
+    })
+      .setProtectedHeader({ alg: "HS256" })
+      .setIssuedAt()
+      .setExpirationTime("7d")
+      .sign(secret);
+
+    res.setHeader("Set-Cookie", [
+      `intent_token=${jwt}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`,
+      `intent_oauth_nonce=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
+    ]);
+
+    // Redirect to frontend (port 5173 in dev)
+    res.redirect(302, `http://localhost:5173${redirectUrl}`);
+  } catch (error) {
+    console.error("OAuth callback error:", error);
+    res.status(500).json({ error: "Authentication failed" });
+  }
+});
+
+// GET /api/auth/me - Get current user
+app.get("/api/auth/me", async (req, res) => {
+  const auth = await getAuthUser(req.headers.cookie);
+  if (!auth) {
+    return res.status(401).json({ error: "Not authenticated", user: null });
+  }
+  res.json({ user: auth.user });
+});
+
+// POST /api/auth/logout - Clear auth cookie
+app.post("/api/auth/logout", (_req, res) => {
+  res.setHeader("Set-Cookie", [`intent_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`]);
+  res.json({ success: true });
+});
+
+// GET /api/config - Get frontend configuration
+app.get("/api/config", (_req, res) => {
+  res.json({
+    defaultRepo: DEFAULT_REPO || null,
+    defaultRepoPath: DEFAULT_REPO_PATH || null,
+    hasOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET),
+  });
+});
+
+// ============================================
+// API ROUTES
+// ============================================
 
 interface DiffRequest {
   repoPath: string;
@@ -768,19 +949,30 @@ app.post("/api/github-pr", async (req, res) => {
     prNumber: number;
   };
 
+  console.log(`[github-pr] Request for ${owner}/${repo}/pull/${prNumber}`);
+
   if (!owner || !repo || !prNumber) {
     return res.status(400).json({ error: "Missing owner, repo, or prNumber" });
   }
+
+  // Get user's OAuth token from session cookie
+  const auth = await getAuthUser(req.headers.cookie);
+  const userToken = auth?.githubToken;
+  console.log(`[github-pr] User authenticated: ${!!auth}, has token: ${!!userToken}`);
 
   try {
     // Fetch PR diff from GitHub API
     const response = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
-      { headers: getGitHubHeaders("application/vnd.github.v3.diff") }
+      { headers: getGitHubHeaders("application/vnd.github.v3.diff", userToken) }
     );
 
+    console.log(`[github-pr] GitHub API response: ${response.status}`);
+
     if (!response.ok) {
-      throw new Error(`GitHub API error: ${response.status}`);
+      const errorBody = await response.text();
+      console.log(`[github-pr] GitHub API error body: ${errorBody}`);
+      throw new Error(`GitHub API error: ${response.status} - ${errorBody}`);
     }
 
     const diff = await response.text();
@@ -788,7 +980,7 @@ app.post("/api/github-pr", async (req, res) => {
     // Get PR info
     const prInfoResponse = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
-      { headers: getGitHubHeaders() }
+      { headers: getGitHubHeaders(undefined, userToken) }
     );
 
     const prInfo = await prInfoResponse.json();
@@ -796,7 +988,7 @@ app.post("/api/github-pr", async (req, res) => {
     // Get changed files
     const filesResponse = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/files`,
-      { headers: getGitHubHeaders() }
+      { headers: getGitHubHeaders(undefined, userToken) }
     );
 
     const files = await filesResponse.json();
@@ -813,7 +1005,7 @@ app.post("/api/github-pr", async (req, res) => {
       // Check if manifest exists
       const manifestResponse = await fetch(
         `https://api.github.com/repos/${owner}/${repo}/contents/.intent/manifest.yaml?ref=${head}`,
-        { headers: getGitHubHeaders() }
+        { headers: getGitHubHeaders(undefined, userToken) }
       );
 
       if (manifestResponse.ok) {
@@ -830,7 +1022,7 @@ app.post("/api/github-pr", async (req, res) => {
               try {
                 const intentResponse = await fetch(
                   `https://api.github.com/repos/${owner}/${repo}/contents/.intent/intents/${intentEntry.file}?ref=${head}`,
-                  { headers: getGitHubHeaders() }
+                  { headers: getGitHubHeaders(undefined, userToken) }
                 );
 
                 if (intentResponse.ok) {
@@ -868,7 +1060,7 @@ app.post("/api/github-pr", async (req, res) => {
       try {
         const fileResponse = await fetch(
           `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${head}`,
-          { headers: getGitHubHeaders() }
+          { headers: getGitHubHeaders(undefined, userToken) }
         );
         if (fileResponse.ok) {
           const fileData = await fileResponse.json();
@@ -968,11 +1160,15 @@ app.post("/api/github-branches-diff", async (req, res) => {
     return res.status(400).json({ error: "Missing owner, repo, base, or head" });
   }
 
+  // Get user's OAuth token from session cookie
+  const auth = await getAuthUser(req.headers.cookie);
+  const userToken = auth?.githubToken;
+
   try {
     // Get diff between branches
     const diffResponse = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/compare/${base}...${head}`,
-      { headers: getGitHubHeaders("application/vnd.github.v3.diff") }
+      { headers: getGitHubHeaders("application/vnd.github.v3.diff", userToken) }
     );
 
     if (!diffResponse.ok) {
@@ -984,7 +1180,7 @@ app.post("/api/github-branches-diff", async (req, res) => {
     // Get compare info for changed files
     const compareResponse = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/compare/${base}...${head}`,
-      { headers: getGitHubHeaders() }
+      { headers: getGitHubHeaders(undefined, userToken) }
     );
 
     const compareData = await compareResponse.json();
@@ -998,7 +1194,7 @@ app.post("/api/github-branches-diff", async (req, res) => {
       // Check if manifest exists
       const manifestResponse = await fetch(
         `https://api.github.com/repos/${owner}/${repo}/contents/.intent/manifest.yaml?ref=${head}`,
-        { headers: getGitHubHeaders() }
+        { headers: getGitHubHeaders(undefined, userToken) }
       );
 
       if (manifestResponse.ok) {
@@ -1015,7 +1211,7 @@ app.post("/api/github-branches-diff", async (req, res) => {
               try {
                 const intentResponse = await fetch(
                   `https://api.github.com/repos/${owner}/${repo}/contents/.intent/intents/${intentEntry.file}?ref=${head}`,
-                  { headers: getGitHubHeaders() }
+                  { headers: getGitHubHeaders(undefined, userToken) }
                 );
 
                 if (intentResponse.ok) {
@@ -1053,7 +1249,7 @@ app.post("/api/github-branches-diff", async (req, res) => {
       try {
         const fileResponse = await fetch(
           `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${head}`,
-          { headers: getGitHubHeaders() }
+          { headers: getGitHubHeaders(undefined, userToken) }
         );
         if (fileResponse.ok) {
           const fileData = await fileResponse.json();
@@ -1143,11 +1339,15 @@ app.post("/api/github-discover-branches", async (req, res) => {
     return res.status(400).json({ error: "Missing owner or repo" });
   }
 
+  // Get user's OAuth token from session cookie
+  const auth = await getAuthUser(req.headers.cookie);
+  const userToken = auth?.githubToken;
+
   try {
     // Get repo info (includes default branch)
     const repoResponse = await fetch(
       `https://api.github.com/repos/${owner}/${repo}`,
-      { headers: getGitHubHeaders() }
+      { headers: getGitHubHeaders(undefined, userToken) }
     );
 
     if (!repoResponse.ok) {
@@ -1160,7 +1360,7 @@ app.post("/api/github-discover-branches", async (req, res) => {
     // Get all branches
     const branchesResponse = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/branches?per_page=100`,
-      { headers: getGitHubHeaders() }
+      { headers: getGitHubHeaders(undefined, userToken) }
     );
 
     if (!branchesResponse.ok) {
@@ -1190,7 +1390,7 @@ app.post("/api/github-discover-branches", async (req, res) => {
       try {
         const manifestResponse = await fetch(
           `https://api.github.com/repos/${owner}/${repo}/contents/.intent/manifest.yaml?ref=${branch.name}`,
-          { headers: getGitHubHeaders() }
+          { headers: getGitHubHeaders(undefined, userToken) }
         );
         if (manifestResponse.ok) {
           hasIntents = true;
@@ -1212,7 +1412,7 @@ app.post("/api/github-discover-branches", async (req, res) => {
         try {
           const compareResponse = await fetch(
             `https://api.github.com/repos/${owner}/${repo}/compare/${defaultBranch}...${branch.name}`,
-            { headers: getGitHubHeaders() }
+            { headers: getGitHubHeaders(undefined, userToken) }
           );
           if (compareResponse.ok) {
             const compareData = await compareResponse.json();
@@ -1232,7 +1432,7 @@ app.post("/api/github-discover-branches", async (req, res) => {
       try {
         const commitResponse = await fetch(
           branch.commit.url,
-          { headers: getGitHubHeaders() }
+          { headers: getGitHubHeaders(undefined, userToken) }
         );
         if (commitResponse.ok) {
           const commitData = await commitResponse.json();
@@ -1314,6 +1514,10 @@ app.post("/api/github-browse", async (req, res) => {
     return res.status(400).json({ error: "Missing owner, repo, or branch" });
   }
 
+  // Get user's OAuth token from session cookie
+  const auth = await getAuthUser(req.headers.cookie);
+  const userToken = auth?.githubToken;
+
   try {
     const intentsV2: IntentV2[] = [];
     let manifest: Manifest | null = null;
@@ -1325,7 +1529,7 @@ app.post("/api/github-browse", async (req, res) => {
     try {
       const repoResponse = await fetch(
         `https://api.github.com/repos/${owner}/${repo}`,
-        { headers: getGitHubHeaders() }
+        { headers: getGitHubHeaders(undefined, userToken) }
       );
       if (repoResponse.ok) {
         const repoData = await repoResponse.json();
@@ -1345,7 +1549,7 @@ app.post("/api/github-browse", async (req, res) => {
       // Check if manifest exists
       const manifestResponse = await fetch(
         `https://api.github.com/repos/${owner}/${repo}/contents/.intent/manifest.yaml?ref=${branch}`,
-        { headers: getGitHubHeaders() }
+        { headers: getGitHubHeaders(undefined, userToken) }
       );
 
       if (manifestResponse.ok) {
@@ -1362,7 +1566,7 @@ app.post("/api/github-browse", async (req, res) => {
               try {
                 const intentResponse = await fetch(
                   `https://api.github.com/repos/${owner}/${repo}/contents/.intent/intents/${intentEntry.file}?ref=${branch}`,
-                  { headers: getGitHubHeaders() }
+                  { headers: getGitHubHeaders(undefined, userToken) }
                 );
 
                 if (intentResponse.ok) {
@@ -1397,7 +1601,7 @@ app.post("/api/github-browse", async (req, res) => {
       try {
         const fileResponse = await fetch(
           `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${branch}`,
-          { headers: getGitHubHeaders() }
+          { headers: getGitHubHeaders(undefined, userToken) }
         );
 
         if (fileResponse.ok) {

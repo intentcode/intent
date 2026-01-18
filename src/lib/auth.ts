@@ -1,3 +1,6 @@
+// In production (Vercel), use relative paths. In dev, use localhost:3001
+const API_BASE = import.meta.env.DEV ? "http://localhost:3001" : "";
+
 export interface User {
   id: string;
   login: string;
@@ -7,7 +10,9 @@ export interface User {
 
 export async function getCurrentUser(): Promise<User | null> {
   try {
-    const res = await fetch('/api/auth/me');
+    const res = await fetch(`${API_BASE}/api/auth/me`, {
+      credentials: 'include', // Include cookies for cross-origin requests
+    });
     const data = await res.json();
     return data.user || null;
   } catch {
@@ -16,7 +21,7 @@ export async function getCurrentUser(): Promise<User | null> {
 }
 
 export function loginWithGitHub(redirect?: string) {
-  const url = new URL('/api/auth/github', window.location.origin);
+  const url = new URL(`${API_BASE}/api/auth/github`);
   if (redirect) {
     url.searchParams.set('redirect', redirect);
   }
@@ -24,6 +29,9 @@ export function loginWithGitHub(redirect?: string) {
 }
 
 export async function logout(): Promise<void> {
-  await fetch('/api/auth/logout', { method: 'POST' });
+  await fetch(`${API_BASE}/api/auth/logout`, {
+    method: 'POST',
+    credentials: 'include',
+  });
   window.location.reload();
 }

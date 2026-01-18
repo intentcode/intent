@@ -38,3 +38,6 @@ intents:
   - id: "012"
     file: 012-ux-loading-optimizations.intent.md
     status: active
+  - id: "013"
+    file: 013-local-oauth.intent.md
+    status: active

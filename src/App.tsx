@@ -4,7 +4,7 @@ import { parseDiff } from "./lib/parseDiff";
 import type { DiffFile, DiffHunk, DiffLine } from "./lib/parseDiff";
 import { DiffViewer } from "./components/DiffViewer";
 import { RepoSelector } from "./components/RepoSelector";
-import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, fetchGitHubBrowse, AuthRequiredError, type DiffMode, type IntentV2API, type RepoInfo } from "./lib/api";
+import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, fetchGitHubBrowse, fetchConfig, AuthRequiredError, type DiffMode, type IntentV2API, type RepoInfo, type AppConfig } from "./lib/api";
 import { getCurrentUser, loginWithGitHub, logout, type User } from "./lib/auth";
 import { TRANSLATIONS, setStoredLanguage, type Language } from "./lib/language";
 import "./App.css";
@@ -145,6 +145,7 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [hideIntentFiles, setHideIntentFiles] = useState(true);
   const [user, setUser] = useState<User | null>(null);
+  const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const lastLoadParamsRef = useRef<{repoPath: string; diffMode: DiffMode; base: string; head: string} | null>(null);
   const lastBrowseParamsRef = useRef<{repoPath: string; branch: string} | null>(null);
   const lastGitHubPRRef = useRef<{owner: string; repo: string; prNumber: number} | null>(null);
@@ -194,9 +195,10 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
     }
   }, [files]);
 
-  // Fetch current user on mount
+  // Fetch current user and config on mount
   useEffect(() => {
     getCurrentUser().then(setUser);
+    fetchConfig().then(setAppConfig);
   }, []);
 
   // Auto-load from URL params
@@ -898,9 +900,7 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
           onLoadGitHubBranches={loadFromGitHubBranches}
           loading={loading}
           error={error}
-          defaultPath="/Users/berengerouadi/WorkingLab/personal/slack-cleaner"
-          defaultBase="main"
-          defaultHead="feat/add-intents"
+          defaultPath={appConfig?.defaultRepoPath ?? ""}
           localOnly={true}
         />
       )}

@@ -285,6 +285,7 @@ export async function fetchGitHubPR(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ owner, repo, prNumber, lang }),
+    credentials: 'include', // Include cookies for cross-origin auth
   });
 
   if (!res.ok) {
@@ -334,6 +335,7 @@ export async function discoverGitHubBranches(owner: string, repo: string): Promi
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ owner, repo }),
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -355,6 +357,7 @@ export async function fetchGitHubBrowse(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ owner, repo, branch, lang }),
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -377,11 +380,34 @@ export async function fetchGitHubBranchesDiff(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ owner, repo, base, head, lang }),
+    credentials: 'include',
   });
 
   if (!res.ok) {
     const error = await res.json();
     throw new Error(error.error || "Failed to fetch GitHub branches diff");
+  }
+
+  return res.json();
+}
+
+// App configuration from server
+export interface AppConfig {
+  defaultRepo: string | null;
+  defaultRepoPath: string | null;
+  hasOAuth: boolean;
+}
+
+export async function fetchConfig(): Promise<AppConfig> {
+  const res = await fetch(`${API_BASE}/api/config`);
+
+  if (!res.ok) {
+    // Return defaults if config endpoint fails
+    return {
+      defaultRepo: null,
+      defaultRepoPath: null,
+      hasOAuth: false,
+    };
   }
 
   return res.json();
