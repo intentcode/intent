@@ -12,6 +12,21 @@ export class AuthRequiredError extends Error {
   }
 }
 
+// Custom error for when GitHub App is not installed on the organization
+export class AppNotInstalledError extends Error {
+  installUrl: string;
+  owner: string;
+  repo: string;
+
+  constructor(message: string, installUrl: string, owner: string, repo: string) {
+    super(message);
+    this.name = "AppNotInstalledError";
+    this.installUrl = installUrl;
+    this.owner = owner;
+    this.repo = repo;
+  }
+}
+
 export type DiffMode = "branches";
 
 // V2 Intent types (matching server response)
@@ -290,6 +305,14 @@ export async function fetchGitHubPR(
 
   if (!res.ok) {
     const errorData = await res.json();
+    if (errorData.error === "app_not_installed") {
+      throw new AppNotInstalledError(
+        errorData.message,
+        errorData.installUrl,
+        errorData.owner,
+        errorData.repo
+      );
+    }
     if (errorData.needsAuth) {
       throw new AuthRequiredError(
         errorData.error || "This repository may be private. Please login with GitHub to access it.",
@@ -386,6 +409,38 @@ export async function fetchGitHubBranchesDiff(
   if (!res.ok) {
     const error = await res.json();
     throw new Error(error.error || "Failed to fetch GitHub branches diff");
+  }
+
+  return res.json();
+}
+
+// Open PRs list
+export interface OpenPR {
+  number: number;
+  title: string;
+  author: string;
+  authorAvatar: string;
+  head: string;
+  base: string;
+  updatedAt: string;
+  draft: boolean;
+}
+
+export interface OpenPRsResponse {
+  prs: OpenPR[];
+}
+
+export async function fetchOpenPRs(owner: string, repo: string): Promise<OpenPRsResponse> {
+  const res = await fetch(`${API_BASE}/api/github-prs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner, repo }),
+    credentials: 'include',
+  });
+
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.error || "Failed to fetch open PRs");
   }
 
   return res.json();

@@ -4,7 +4,7 @@ import { parseDiff } from "./lib/parseDiff";
 import type { DiffFile, DiffHunk, DiffLine } from "./lib/parseDiff";
 import { DiffViewer } from "./components/DiffViewer";
 import { RepoSelector } from "./components/RepoSelector";
-import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, fetchGitHubBrowse, fetchConfig, AuthRequiredError, type DiffMode, type IntentV2API, type RepoInfo, type AppConfig } from "./lib/api";
+import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, fetchGitHubBrowse, fetchConfig, fetchOpenPRs, AuthRequiredError, AppNotInstalledError, type DiffMode, type IntentV2API, type RepoInfo, type AppConfig, type OpenPR } from "./lib/api";
 import { getCurrentUser, loginWithGitHub, logout, type User } from "./lib/auth";
 import { TRANSLATIONS, setStoredLanguage, type Language } from "./lib/language";
 import "./App.css";
@@ -26,7 +26,7 @@ interface FileData {
 
 // Context to track what diff is being displayed
 interface DiffContext {
-  type: "branches" | "browse" | "github-pr" | "github-branches";
+  type: "branches" | "browse" | "github-pr" | "github-branches" | "github-browse";
   base?: string;
   head?: string;
   repoPath?: string;
@@ -140,12 +140,26 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
   const [expandChunkAnchor, setExpandChunkAnchor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsAuth, setNeedsAuth] = useState(false);
+  const [appInstallError, setAppInstallError] = useState<{ message: string; installUrl: string; owner: string } | null>(null);
   const [diffRequested, setDiffRequested] = useState(false);
   const [diffContext, setDiffContext] = useState<DiffContext | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [hideIntentFiles, setHideIntentFiles] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const [prSwitcherOpen, setPrSwitcherOpen] = useState(false);
+  const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
+  const [loadingPRs, setLoadingPRs] = useState(false);
+  const prSwitcherRef = useRef<HTMLDivElement>(null);
+  const [currentVisibleFile, setCurrentVisibleFile] = useState<string | null>(null);
+  const [scrollIndicatorMarkers, setScrollIndicatorMarkers] = useState<Array<{
+    id: string;
+    anchor: string;
+    top: number;
+    height: number;
+    isHighlighted: boolean;
+    filename: string;
+  }>>([]);
   const lastLoadParamsRef = useRef<{repoPath: string; diffMode: DiffMode; base: string; head: string} | null>(null);
   const lastBrowseParamsRef = useRef<{repoPath: string; branch: string} | null>(null);
   const lastGitHubPRRef = useRef<{owner: string; repo: string; prNumber: number} | null>(null);
@@ -200,6 +214,44 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
     getCurrentUser().then(setUser);
     fetchConfig().then(setAppConfig);
   }, []);
+
+  // Close PR switcher on click outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (prSwitcherRef.current && !prSwitcherRef.current.contains(event.target as Node)) {
+        setPrSwitcherOpen(false);
+      }
+    };
+    if (prSwitcherOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [prSwitcherOpen]);
+
+  // Toggle PR switcher and fetch PRs if needed
+  const togglePRSwitcher = async () => {
+    if (!diffContext?.owner || !diffContext?.repo) return;
+
+    if (!prSwitcherOpen && openPRs.length === 0 && !loadingPRs) {
+      setLoadingPRs(true);
+      try {
+        const response = await fetchOpenPRs(diffContext.owner, diffContext.repo);
+        setOpenPRs(response.prs);
+      } catch (err) {
+        console.error('Failed to fetch PRs:', err);
+      } finally {
+        setLoadingPRs(false);
+      }
+    }
+    setPrSwitcherOpen(!prSwitcherOpen);
+  };
+
+  // Navigate to a different PR
+  const navigateToPR = (prNumber: number) => {
+    if (!diffContext?.owner || !diffContext?.repo) return;
+    const url = `/${diffContext.owner}/${diffContext.repo}/pull/${prNumber}`;
+    window.location.href = url;
+  };
 
   // Auto-load from URL params
   useEffect(() => {
@@ -405,6 +457,124 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
     });
   }, [filesWithVirtualHunks, hideIntentFiles]);
 
+  // Track currently visible file using IntersectionObserver
+  useEffect(() => {
+    if (filteredFiles.length === 0) return;
+
+    const observerOptions = {
+      root: null,
+      rootMargin: '-20% 0px -60% 0px', // Trigger when file is in top 40% of viewport
+      threshold: 0,
+    };
+
+    const observerCallback = (entries: IntersectionObserverEntry[]) => {
+      // Find the topmost visible file
+      const visibleEntries = entries.filter(entry => entry.isIntersecting);
+      if (visibleEntries.length > 0) {
+        // Sort by position and get the topmost one
+        const topmost = visibleEntries.reduce((prev, curr) => {
+          return prev.boundingClientRect.top < curr.boundingClientRect.top ? prev : curr;
+        });
+        const filename = topmost.target.getAttribute('data-filename');
+        if (filename) {
+          setCurrentVisibleFile(filename);
+        }
+      }
+    };
+
+    const observer = new IntersectionObserver(observerCallback, observerOptions);
+
+    // Observe all file containers
+    filteredFiles.forEach(file => {
+      const el = document.getElementById(`file-${file.filename}`);
+      if (el) {
+        el.setAttribute('data-filename', file.filename);
+        observer.observe(el);
+      }
+    });
+
+    return () => observer.disconnect();
+  }, [filteredFiles]);
+
+  // Calculate scroll indicator marker positions based on chunk DOM elements
+  useEffect(() => {
+    if (filteredIntentsV2.length === 0) {
+      setScrollIndicatorMarkers([]);
+      return;
+    }
+
+    const calculateMarkers = () => {
+      const docHeight = document.documentElement.scrollHeight;
+      const viewportHeight = window.innerHeight;
+
+      if (docHeight <= viewportHeight) {
+        setScrollIndicatorMarkers([]);
+        return;
+      }
+
+      const markers: typeof scrollIndicatorMarkers = [];
+
+      filteredIntentsV2.forEach(intent => {
+        const isHighlighted = selectedIntentId ? intent.frontmatter.id === selectedIntentId : true;
+
+        intent.resolvedChunks.forEach(chunk => {
+          if (!chunk.resolved) return;
+
+          // Find the chunk card element in the DOM
+          const filename = intent.frontmatter.files[0]?.split('/').pop() || '';
+          const chunkEl = document.getElementById(`chunk-${filename}-${chunk.anchor}`);
+
+          if (chunkEl) {
+            const rect = chunkEl.getBoundingClientRect();
+            const absoluteTop = rect.top + window.scrollY;
+            const topPercent = (absoluteTop / docHeight) * 100;
+            const heightPercent = Math.max((rect.height / docHeight) * 100, 0.5);
+
+            markers.push({
+              id: `${filename}-${chunk.anchor}`,
+              anchor: chunk.anchor,
+              top: topPercent,
+              height: heightPercent,
+              isHighlighted,
+              filename,
+            });
+          }
+        });
+      });
+
+      setScrollIndicatorMarkers(markers);
+    };
+
+    // Calculate on mount and after a short delay (for DOM to settle)
+    const timeoutId = setTimeout(calculateMarkers, 100);
+
+    // Recalculate on resize
+    window.addEventListener('resize', calculateMarkers);
+
+    // Use MutationObserver to detect DOM changes (chunk expand/collapse)
+    const observer = new MutationObserver(() => {
+      // Debounce recalculation
+      setTimeout(calculateMarkers, 50);
+    });
+
+    // Observe the main content area for size changes
+    const mainContent = document.querySelector('.files-content');
+    if (mainContent) {
+      observer.observe(mainContent, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'style'],
+      });
+    }
+
+    return () => {
+      clearTimeout(timeoutId);
+      window.removeEventListener('resize', calculateMarkers);
+      observer.disconnect();
+    };
+  }, [filteredIntentsV2, selectedIntentId, filteredFiles]);
+
   // Reload when language changes
   useEffect(() => {
     // Skip the first render (initial mount)
@@ -597,6 +767,7 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
     setLoading(true);
     setLoadingContext("github-pr");
     setError(null);
+    setAppInstallError(null);
     setDiffRequested(true);
     setDiffContext({
       type: "github-pr",
@@ -635,11 +806,21 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
       setChangedFiles(response.changedFiles || []);
       setAllFileContents(response.fileContents || {});
     } catch (err) {
-      if (err instanceof AuthRequiredError) {
+      if (err instanceof AppNotInstalledError) {
+        setAppInstallError({
+          message: err.message,
+          installUrl: err.installUrl,
+          owner: err.owner,
+        });
+        setNeedsAuth(false);
+        setError(null);
+      } else if (err instanceof AuthRequiredError) {
         setNeedsAuth(true);
+        setAppInstallError(null);
         setError(err.message);
       } else {
         setNeedsAuth(false);
+        setAppInstallError(null);
         setError(err instanceof Error ? err.message : "Failed to load GitHub PR");
       }
     } finally {
@@ -705,7 +886,7 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
     setError(null);
     setDiffRequested(true);
     setDiffContext({
-      type: "browse",
+      type: "github-browse",
       head: branch,
       owner,
       repo,
@@ -776,6 +957,8 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
       switch (diffContext.type) {
         case "browse":
           return `${diffContext.head}`;
+        case "github-browse":
+          return `${diffContext.head}`;
         case "branches":
           return `${diffContext.base} → ${diffContext.head}`;
         case "github-pr":
@@ -790,6 +973,7 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
     const getIcon = () => {
       switch (diffContext.type) {
         case "browse":
+        case "github-browse":
           return "📖";
         case "branches":
         case "github-branches":
@@ -802,7 +986,7 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
     };
 
     const getRepoName = () => {
-      if (diffContext.type === "github-pr" || diffContext.type === "github-branches") {
+      if (diffContext.type === "github-pr" || diffContext.type === "github-branches" || diffContext.type === "github-browse") {
         return `${diffContext.owner}/${diffContext.repo}`;
       }
       if (diffContext.repoPath) {
@@ -811,12 +995,97 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
       return "";
     };
 
+    const isPR = diffContext.type === "github-pr";
+    const isGitHubBrowse = diffContext.type === "github-browse";
+    const canShowPRSwitcher = isPR || isGitHubBrowse;
+
     return (
-      <div className="diff-context-badge">
-        <span className="diff-context-icon">{getIcon()}</span>
-        <span className="diff-context-repo">{getRepoName()}</span>
-        <span className="diff-context-separator">|</span>
-        <span className="diff-context-label">{getLabel()}</span>
+      <div className="diff-context-wrapper" ref={prSwitcherRef}>
+        <div
+          className={`diff-context-badge ${canShowPRSwitcher ? 'clickable' : ''}`}
+          onClick={canShowPRSwitcher ? togglePRSwitcher : undefined}
+        >
+          <span className="diff-context-icon">{getIcon()}</span>
+          <span className="diff-context-repo">{getRepoName()}</span>
+          <span className="diff-context-separator">|</span>
+          <span className="diff-context-label">{getLabel()}</span>
+          {canShowPRSwitcher && (
+            <span className={`diff-context-chevron ${prSwitcherOpen ? 'open' : ''}`}>
+              ▼
+            </span>
+          )}
+        </div>
+
+        {/* PR Switcher Dropdown */}
+        {canShowPRSwitcher && prSwitcherOpen && (
+          <div className="pr-switcher-dropdown">
+            <div className="pr-switcher-header">
+              <span className="pr-switcher-title">Open Pull Requests</span>
+              <span className="pr-switcher-repo">{diffContext.owner}/{diffContext.repo}</span>
+            </div>
+            {/* Browse main branch link - only show when viewing a PR */}
+            {isPR && (
+              <a
+                href={`/${diffContext.owner}/${diffContext.repo}`}
+                className="pr-switcher-browse-main"
+                onClick={(e) => {
+                  e.preventDefault();
+                  window.location.href = `/${diffContext.owner}/${diffContext.repo}`;
+                }}
+              >
+                <span className="browse-main-icon">📖</span>
+                <span className="browse-main-text">Browse main branch</span>
+                <span className="browse-main-arrow">→</span>
+              </a>
+            )}
+            {/* Current branch indicator when browsing (only if not on main/master) */}
+            {isGitHubBrowse && diffContext.head && !['main', 'master'].includes(diffContext.head) && (
+              <div className="pr-switcher-current-branch">
+                <span className="current-branch-icon">📖</span>
+                <span className="current-branch-text">Browsing: {diffContext.head}</span>
+              </div>
+            )}
+            {loadingPRs ? (
+              <div className="pr-switcher-loading">
+                <div className="pr-switcher-spinner"></div>
+                <span>Loading PRs...</span>
+              </div>
+            ) : openPRs.length === 0 ? (
+              <div className="pr-switcher-empty">No open PRs</div>
+            ) : (
+              <div className="pr-switcher-list">
+                {openPRs.map((pr) => (
+                  <div
+                    key={pr.number}
+                    className={`pr-switcher-item ${pr.number === diffContext.prNumber ? 'active' : ''}`}
+                    onClick={() => pr.number !== diffContext.prNumber && navigateToPR(pr.number)}
+                  >
+                    <img
+                      src={pr.authorAvatar}
+                      alt={pr.author}
+                      className="pr-switcher-avatar"
+                    />
+                    <div className="pr-switcher-info">
+                      <div className="pr-switcher-item-header">
+                        <span className="pr-switcher-number">#{pr.number}</span>
+                        {pr.draft && <span className="pr-switcher-draft">Draft</span>}
+                        {pr.number === diffContext.prNumber && (
+                          <span className="pr-switcher-current">Current</span>
+                        )}
+                      </div>
+                      <div className="pr-switcher-item-title">{pr.title}</div>
+                      <div className="pr-switcher-item-meta">
+                        <span className="pr-switcher-branch">{pr.head}</span>
+                        <span className="pr-switcher-arrow">→</span>
+                        <span className="pr-switcher-branch">{pr.base}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   };
@@ -1055,8 +1324,49 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
         </div>
       )}
 
+      {/* App not installed error - show install prompt */}
+      {appInstallError && !loading && (
+        <div className="install-required-banner">
+          <div className="install-required-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+              <path d="M2 17l10 5 10-5"/>
+              <path d="M2 12l10 5 10-5"/>
+            </svg>
+          </div>
+          <div className="install-required-content">
+            <div className="install-required-title">
+              {lang === "fr" ? "Installation de l'application requise" : "GitHub App Installation Required"}
+            </div>
+            <div className="install-required-desc">
+              {lang === "fr" ? (
+                <>L'application <strong>Intent</strong> doit être installée sur l'organisation <strong>{appInstallError.owner}</strong> pour accéder aux dépôts privés.</>
+              ) : (
+                <>The <strong>Intent</strong> app needs to be installed on the <strong>{appInstallError.owner}</strong> organization to access private repositories.</>
+              )}
+            </div>
+            <div className="install-required-hint">
+              {lang === "fr"
+                ? "Cliquez sur le bouton ci-dessous pour installer l'application. Vous pourrez ensuite sélectionner les dépôts auxquels accorder l'accès."
+                : "Click the button below to install the app. You'll be able to select which repositories to grant access to."}
+            </div>
+          </div>
+          <a
+            href={appInstallError.installUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="install-required-btn"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+            </svg>
+            {lang === "fr" ? "Installer sur GitHub" : "Install on GitHub"}
+          </a>
+        </div>
+      )}
+
       {/* General error display */}
-      {error && !needsAuth && !loading && (
+      {error && !needsAuth && !appInstallError && !loading && (
         <div className="error-banner">
           <div className="error-icon">😵</div>
           <div className="error-title">{t("errorTitle")}</div>
@@ -1153,13 +1463,68 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
                     )}
                   </div>
                 )}
-                {/* Branch Info */}
+                {/* Branch Info with PR Switcher */}
                 {diffContext && (
-                  <div className="project-overview-branch">
-                    <span className="branch-icon">⎇</span>
-                    <span className="branch-name">{diffContext.head}</span>
-                    {diffContext.owner && diffContext.repo && (
-                      <span className="branch-repo">{diffContext.owner}/{diffContext.repo}</span>
+                  <div className="project-overview-branch-wrapper" ref={diffContext.type === "github-browse" ? prSwitcherRef : undefined}>
+                    <div
+                      className={`project-overview-branch ${diffContext.owner && diffContext.repo ? 'clickable' : ''}`}
+                      onClick={diffContext.owner && diffContext.repo ? togglePRSwitcher : undefined}
+                    >
+                      <span className="branch-icon">⎇</span>
+                      <span className="branch-name">{diffContext.head}</span>
+                      {diffContext.owner && diffContext.repo && (
+                        <>
+                          <span className="branch-repo">{diffContext.owner}/{diffContext.repo}</span>
+                          <span className={`branch-chevron ${prSwitcherOpen ? 'open' : ''}`}>▼</span>
+                        </>
+                      )}
+                    </div>
+                    {/* PR Switcher Dropdown for Browse Mode */}
+                    {diffContext.owner && diffContext.repo && prSwitcherOpen && (
+                      <div className="pr-switcher-dropdown branch-dropdown">
+                        <div className="pr-switcher-header">
+                          <span className="pr-switcher-title">Open Pull Requests</span>
+                          <span className="pr-switcher-repo">{diffContext.owner}/{diffContext.repo}</span>
+                        </div>
+                        {diffContext.head && !['main', 'master'].includes(diffContext.head) && (
+                          <div className="pr-switcher-current-branch">
+                            <span className="current-branch-icon">📖</span>
+                            <span className="current-branch-text">Browsing: {diffContext.head}</span>
+                          </div>
+                        )}
+                        {loadingPRs ? (
+                          <div className="pr-switcher-loading">
+                            <div className="pr-switcher-spinner"></div>
+                            <span>Loading PRs...</span>
+                          </div>
+                        ) : openPRs.length === 0 ? (
+                          <div className="pr-switcher-empty">No open PRs</div>
+                        ) : (
+                          <div className="pr-switcher-list">
+                            {openPRs.map((pr) => (
+                              <div
+                                key={pr.number}
+                                className="pr-switcher-item"
+                                onClick={() => navigateToPR(pr.number)}
+                              >
+                                <img src={pr.authorAvatar} alt={pr.author} className="pr-switcher-avatar" />
+                                <div className="pr-switcher-info">
+                                  <div className="pr-switcher-item-header">
+                                    <span className="pr-switcher-number">#{pr.number}</span>
+                                    {pr.draft && <span className="pr-switcher-draft">Draft</span>}
+                                  </div>
+                                  <div className="pr-switcher-item-title">{pr.title}</div>
+                                  <div className="pr-switcher-item-meta">
+                                    <span className="pr-switcher-branch">{pr.head}</span>
+                                    <span className="pr-switcher-arrow">→</span>
+                                    <span className="pr-switcher-branch">{pr.base}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
@@ -1336,13 +1701,68 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
                   )}
                 </div>
               )}
-              {/* Branch Info */}
+              {/* Branch Info with PR Switcher */}
               {diffContext && (
-                <div className="project-overview-branch">
-                  <span className="branch-icon">⎇</span>
-                  <span className="branch-name">{diffContext.head}</span>
-                  {diffContext.owner && diffContext.repo && (
-                    <span className="branch-repo">{diffContext.owner}/{diffContext.repo}</span>
+                <div className="project-overview-branch-wrapper" ref={diffContext.type === "github-browse" ? prSwitcherRef : undefined}>
+                  <div
+                    className={`project-overview-branch ${diffContext.owner && diffContext.repo ? 'clickable' : ''}`}
+                    onClick={diffContext.owner && diffContext.repo ? togglePRSwitcher : undefined}
+                  >
+                    <span className="branch-icon">⎇</span>
+                    <span className="branch-name">{diffContext.head}</span>
+                    {diffContext.owner && diffContext.repo && (
+                      <>
+                        <span className="branch-repo">{diffContext.owner}/{diffContext.repo}</span>
+                        <span className={`branch-chevron ${prSwitcherOpen ? 'open' : ''}`}>▼</span>
+                      </>
+                    )}
+                  </div>
+                  {/* PR Switcher Dropdown for Browse Mode */}
+                  {diffContext.owner && diffContext.repo && prSwitcherOpen && (
+                    <div className="pr-switcher-dropdown branch-dropdown">
+                      <div className="pr-switcher-header">
+                        <span className="pr-switcher-title">Open Pull Requests</span>
+                        <span className="pr-switcher-repo">{diffContext.owner}/{diffContext.repo}</span>
+                      </div>
+                      {diffContext.head && !['main', 'master'].includes(diffContext.head) && (
+                        <div className="pr-switcher-current-branch">
+                          <span className="current-branch-icon">📖</span>
+                          <span className="current-branch-text">Browsing: {diffContext.head}</span>
+                        </div>
+                      )}
+                      {loadingPRs ? (
+                        <div className="pr-switcher-loading">
+                          <div className="pr-switcher-spinner"></div>
+                          <span>Loading PRs...</span>
+                        </div>
+                      ) : openPRs.length === 0 ? (
+                        <div className="pr-switcher-empty">No open PRs</div>
+                      ) : (
+                        <div className="pr-switcher-list">
+                          {openPRs.map((pr) => (
+                            <div
+                              key={pr.number}
+                              className="pr-switcher-item"
+                              onClick={() => navigateToPR(pr.number)}
+                            >
+                              <img src={pr.authorAvatar} alt={pr.author} className="pr-switcher-avatar" />
+                              <div className="pr-switcher-info">
+                                <div className="pr-switcher-item-header">
+                                  <span className="pr-switcher-number">#{pr.number}</span>
+                                  {pr.draft && <span className="pr-switcher-draft">Draft</span>}
+                                </div>
+                                <div className="pr-switcher-item-title">{pr.title}</div>
+                                <div className="pr-switcher-item-meta">
+                                  <span className="pr-switcher-branch">{pr.head}</span>
+                                  <span className="pr-switcher-arrow">→</span>
+                                  <span className="pr-switcher-branch">{pr.base}</span>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -1420,10 +1840,11 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
                 const indent = depth * 16;
 
                 if (node.isFile) {
+                  const isCurrent = currentVisibleFile === node.name;
                   return (
                     <div
                       key={node.path}
-                      className={`tree-file ${node.isNew ? "added" : "modified"}`}
+                      className={`tree-file ${node.isNew ? "added" : "modified"} ${isCurrent ? "current" : ""}`}
                       style={{ paddingLeft: `${indent + 20}px` }}
                       onClick={() => {
                         const el = document.getElementById(`file-${node.name}`);
@@ -1434,6 +1855,7 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
                         {node.isNew ? "+" : "M"}
                       </span>
                       <span className="tree-file-name">{node.name}</span>
+                      {isCurrent && <span className="tree-file-current-indicator">●</span>}
                     </div>
                   );
                 }
@@ -1696,6 +2118,31 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
         </div>
       </main>
         </>
+      )}
+
+      {/* Global Scroll Indicator - fixed on right edge of viewport */}
+      {scrollIndicatorMarkers.length > 0 && (
+        <div className="global-scroll-indicator">
+          {scrollIndicatorMarkers.map((marker) => (
+            <div
+              key={marker.id}
+              className={`global-scroll-marker ${!marker.isHighlighted ? 'dimmed' : ''}`}
+              style={{
+                top: `${marker.top}%`,
+                height: `${Math.max(marker.height, 0.5)}%`,
+              }}
+              onClick={() => {
+                const el = document.getElementById(`chunk-${marker.filename}-${marker.anchor}`);
+                if (el) {
+                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  el.classList.add('chunk-highlight');
+                  setTimeout(() => el.classList.remove('chunk-highlight'), 2000);
+                }
+              }}
+              title={`${marker.anchor} (${marker.filename})`}
+            />
+          ))}
+        </div>
       )}
     </div>
   );

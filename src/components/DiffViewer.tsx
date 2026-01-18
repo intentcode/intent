@@ -648,7 +648,8 @@ ${t.promptQuestionPlaceholder}
               </div>
             );
           })}
-        </div>
+
+          </div>
 
         {/* Right: Chunk Cards Panel */}
         <div
@@ -803,7 +804,8 @@ ${t.promptQuestionPlaceholder}
             })}
           </div>
         </div>
-      </div>
+
+        </div>
       {/* Toast notification */}
       {toast && (
         <div className="toast-notification">
