@@ -414,6 +414,38 @@ export async function fetchGitHubBranchesDiff(
   return res.json();
 }
 
+// Open PRs list
+export interface OpenPR {
+  number: number;
+  title: string;
+  author: string;
+  authorAvatar: string;
+  head: string;
+  base: string;
+  updatedAt: string;
+  draft: boolean;
+}
+
+export interface OpenPRsResponse {
+  prs: OpenPR[];
+}
+
+export async function fetchOpenPRs(owner: string, repo: string): Promise<OpenPRsResponse> {
+  const res = await fetch(`${API_BASE}/api/github-prs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner, repo }),
+    credentials: 'include',
+  });
+
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.error || "Failed to fetch open PRs");
+  }
+
+  return res.json();
+}
+
 // App configuration from server
 export interface AppConfig {
   defaultRepo: string | null;

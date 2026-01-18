@@ -1386,6 +1386,51 @@ app.post("/api/github-pr", async (req, res) => {
   }
 });
 
+// Fetch open PRs for a GitHub repository
+app.post("/api/github-prs", async (req, res) => {
+  const { owner, repo } = req.body as { owner: string; repo: string };
+
+  if (!owner || !repo) {
+    return res.status(400).json({ error: "Missing owner or repo" });
+  }
+
+  // Get user's OAuth token from session cookie
+  const auth = await getAuthUser(req.headers.cookie);
+  const userToken = auth?.githubToken;
+
+  // Get the best available token
+  const { token: accessToken } = await getRepoAccessToken(owner, repo, userToken);
+
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=10`,
+      { headers: getGitHubHeaders(undefined, accessToken || undefined) }
+    );
+
+    if (!response.ok) {
+      throw new Error(`GitHub API error: ${response.status}`);
+    }
+
+    const prs = await response.json();
+
+    res.json({
+      prs: prs.map((pr: any) => ({
+        number: pr.number,
+        title: pr.title,
+        author: pr.user?.login,
+        authorAvatar: pr.user?.avatar_url,
+        head: pr.head?.ref,
+        base: pr.base?.ref,
+        updatedAt: pr.updated_at,
+        draft: pr.draft,
+      })),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    res.status(500).json({ error: message });
+  }
+});
+
 // Fetch GitHub diff between two branches
 app.post("/api/github-branches-diff", async (req, res) => {
   const { owner, repo, base, head, lang } = req.body as {

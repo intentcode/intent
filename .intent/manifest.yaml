@@ -44,3 +44,6 @@ intents:
   - id: "014"
     file: 014-github-app.intent.md
     status: active
+  - id: "015"
+    file: 015-navigation-enhancements.intent.md
+    status: active
