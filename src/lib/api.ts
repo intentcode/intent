@@ -12,6 +12,21 @@ export class AuthRequiredError extends Error {
   }
 }
 
+// Custom error for when GitHub App is not installed on the organization
+export class AppNotInstalledError extends Error {
+  installUrl: string;
+  owner: string;
+  repo: string;
+
+  constructor(message: string, installUrl: string, owner: string, repo: string) {
+    super(message);
+    this.name = "AppNotInstalledError";
+    this.installUrl = installUrl;
+    this.owner = owner;
+    this.repo = repo;
+  }
+}
+
 export type DiffMode = "branches";
 
 // V2 Intent types (matching server response)
@@ -290,6 +305,14 @@ export async function fetchGitHubPR(
 
   if (!res.ok) {
     const errorData = await res.json();
+    if (errorData.error === "app_not_installed") {
+      throw new AppNotInstalledError(
+        errorData.message,
+        errorData.installUrl,
+        errorData.owner,
+        errorData.repo
+      );
+    }
     if (errorData.needsAuth) {
       throw new AuthRequiredError(
         errorData.error || "This repository may be private. Please login with GitHub to access it.",

@@ -4,7 +4,7 @@ import { parseDiff } from "./lib/parseDiff";
 import type { DiffFile, DiffHunk, DiffLine } from "./lib/parseDiff";
 import { DiffViewer } from "./components/DiffViewer";
 import { RepoSelector } from "./components/RepoSelector";
-import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, fetchGitHubBrowse, fetchConfig, AuthRequiredError, type DiffMode, type IntentV2API, type RepoInfo, type AppConfig } from "./lib/api";
+import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, fetchGitHubBrowse, fetchConfig, AuthRequiredError, AppNotInstalledError, type DiffMode, type IntentV2API, type RepoInfo, type AppConfig } from "./lib/api";
 import { getCurrentUser, loginWithGitHub, logout, type User } from "./lib/auth";
 import { TRANSLATIONS, setStoredLanguage, type Language } from "./lib/language";
 import "./App.css";
@@ -140,6 +140,7 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
   const [expandChunkAnchor, setExpandChunkAnchor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsAuth, setNeedsAuth] = useState(false);
+  const [appInstallError, setAppInstallError] = useState<{ message: string; installUrl: string; owner: string } | null>(null);
   const [diffRequested, setDiffRequested] = useState(false);
   const [diffContext, setDiffContext] = useState<DiffContext | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -597,6 +598,7 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
     setLoading(true);
     setLoadingContext("github-pr");
     setError(null);
+    setAppInstallError(null);
     setDiffRequested(true);
     setDiffContext({
       type: "github-pr",
@@ -635,11 +637,21 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
       setChangedFiles(response.changedFiles || []);
       setAllFileContents(response.fileContents || {});
     } catch (err) {
-      if (err instanceof AuthRequiredError) {
+      if (err instanceof AppNotInstalledError) {
+        setAppInstallError({
+          message: err.message,
+          installUrl: err.installUrl,
+          owner: err.owner,
+        });
+        setNeedsAuth(false);
+        setError(null);
+      } else if (err instanceof AuthRequiredError) {
         setNeedsAuth(true);
+        setAppInstallError(null);
         setError(err.message);
       } else {
         setNeedsAuth(false);
+        setAppInstallError(null);
         setError(err instanceof Error ? err.message : "Failed to load GitHub PR");
       }
     } finally {
@@ -1055,8 +1067,49 @@ function App({ mode, lang: propLang = "en", onLangChange }: AppProps) {
         </div>
       )}
 
+      {/* App not installed error - show install prompt */}
+      {appInstallError && !loading && (
+        <div className="install-required-banner">
+          <div className="install-required-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+              <path d="M2 17l10 5 10-5"/>
+              <path d="M2 12l10 5 10-5"/>
+            </svg>
+          </div>
+          <div className="install-required-content">
+            <div className="install-required-title">
+              {lang === "fr" ? "Installation de l'application requise" : "GitHub App Installation Required"}
+            </div>
+            <div className="install-required-desc">
+              {lang === "fr" ? (
+                <>L'application <strong>Intent</strong> doit être installée sur l'organisation <strong>{appInstallError.owner}</strong> pour accéder aux dépôts privés.</>
+              ) : (
+                <>The <strong>Intent</strong> app needs to be installed on the <strong>{appInstallError.owner}</strong> organization to access private repositories.</>
+              )}
+            </div>
+            <div className="install-required-hint">
+              {lang === "fr"
+                ? "Cliquez sur le bouton ci-dessous pour installer l'application. Vous pourrez ensuite sélectionner les dépôts auxquels accorder l'accès."
+                : "Click the button below to install the app. You'll be able to select which repositories to grant access to."}
+            </div>
+          </div>
+          <a
+            href={appInstallError.installUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="install-required-btn"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+            </svg>
+            {lang === "fr" ? "Installer sur GitHub" : "Install on GitHub"}
+          </a>
+        </div>
+      )}
+
       {/* General error display */}
-      {error && !needsAuth && !loading && (
+      {error && !needsAuth && !appInstallError && !loading && (
         <div className="error-banner">
           <div className="error-icon">😵</div>
           <div className="error-title">{t("errorTitle")}</div>

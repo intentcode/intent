@@ -41,3 +41,6 @@ intents:
   - id: "013"
     file: 013-local-oauth.intent.md
     status: active
+  - id: "014"
+    file: 014-github-app.intent.md
+    status: active
