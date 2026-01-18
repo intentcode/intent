@@ -12,7 +12,9 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "check": "npm run build && npm run test:run",
+    "check:translations": "tsx scripts/check-translations.ts"
   },
   "dependencies": {
     "@types/prismjs": "^1.26.5",
