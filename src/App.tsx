@@ -4,9 +4,13 @@ import { parseDiff } from "./lib/parseDiff";
 import type { DiffFile, DiffHunk, DiffLine } from "./lib/parseDiff";
 import { DiffViewer } from "./components/DiffViewer";
 import { RepoSelector } from "./components/RepoSelector";
+// Components for future refactoring:
+// import { PRSwitcher } from "./components/common/PRSwitcher";
+// import { ScrollIndicator } from "./components/common/ScrollIndicator";
 import { fetchDiff, fetchBrowse, fetchGitHubPR, fetchGitHubBranchesDiff, fetchGitHubBrowse, fetchConfig, fetchOpenPRs, AuthRequiredError, AppNotInstalledError, type DiffMode, type IntentV2API, type RepoInfo, type AppConfig, type OpenPR } from "./lib/api";
 import { getCurrentUser, loginWithGitHub, logout, type User } from "./lib/auth";
 import { TRANSLATIONS, setStoredLanguage, type Language } from "./lib/language";
+import { buildFileTree, type TreeNode } from "./hooks/useFileTree";
 import "./App.css";
 
 type AppMode = "home" | "github-pr" | "github-compare" | "github-browse";
@@ -35,80 +39,7 @@ interface DiffContext {
   prNumber?: number;
 }
 
-// File tree node for hierarchical display
-interface TreeNode {
-  name: string;
-  path: string;
-  isFile: boolean;
-  isNew?: boolean;
-  children: TreeNode[];
-}
-
-// Build a tree structure from flat file paths
-function buildFileTree(files: FileData[]): TreeNode[] {
-  const root: TreeNode[] = [];
-
-  for (const file of files) {
-    const filePath = file.diff.newPath || file.diff.oldPath || file.filename;
-    // Skip files with empty paths
-    if (!filePath || filePath.trim() === '') continue;
-    const parts = filePath.split('/').filter(p => p.length > 0);
-    if (parts.length === 0) continue;
-    const isNew = file.diff?.oldPath === "/dev/null" || !file.diff?.oldPath;
-
-    let currentLevel = root;
-    let currentPath = '';
-
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
-      const isFile = i === parts.length - 1;
-
-      let existing = currentLevel.find(n => n.name === part);
-      if (!existing) {
-        existing = {
-          name: part,
-          path: currentPath,
-          isFile,
-          isNew: isFile ? isNew : undefined,
-          children: [],
-        };
-        currentLevel.push(existing);
-      }
-      currentLevel = existing.children;
-    }
-  }
-
-  // Collapse folders with single folder child (e.g., src/components -> src/components)
-  const collapseNodes = (nodes: TreeNode[]): TreeNode[] => {
-    return nodes.map(node => {
-      if (!node.isFile) {
-        // Recursively collapse children first
-        node.children = collapseNodes(node.children);
-        // If this folder has exactly one child and it's a folder, collapse them
-        while (node.children.length === 1 && !node.children[0].isFile) {
-          const child = node.children[0];
-          node.name = `${node.name}/${child.name}`;
-          node.path = child.path;
-          node.children = child.children;
-        }
-      }
-      return node;
-    });
-  };
-
-  // Sort: folders first, then files, alphabetically
-  const sortNodes = (nodes: TreeNode[]): TreeNode[] => {
-    return nodes
-      .map(n => ({ ...n, children: sortNodes(n.children) }))
-      .sort((a, b) => {
-        if (a.isFile !== b.isFile) return a.isFile ? 1 : -1;
-        return a.name.localeCompare(b.name);
-      });
-  };
-
-  return sortNodes(collapseNodes(root));
-}
+// TreeNode and buildFileTree moved to hooks/useFileTree.ts
 
 const LANGUAGES: { code: Language; label: string }[] = [
   { code: "en", label: "EN" },

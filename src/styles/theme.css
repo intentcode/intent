@@ -1,0 +1,330 @@
+/**
+ * Intent - Design System Theme
+ * GitHub Dark Theme inspired color palette and design tokens
+ */
+
+:root {
+  /* ========================================
+   * COLORS - Background
+   * ======================================== */
+  --color-bg-primary: #0d1117;      /* Darkest - main background */
+  --color-bg-secondary: #161b22;    /* Panels, cards */
+  --color-bg-tertiary: #21262d;     /* Headers, active states */
+  --color-bg-quaternary: #30363d;   /* Hover states */
+  --color-bg-overlay: rgba(0, 0, 0, 0.5);
+
+  /* ========================================
+   * COLORS - Borders
+   * ======================================== */
+  --color-border-primary: #30363d;
+  --color-border-secondary: #21262d;
+  --color-border-muted: rgba(48, 54, 61, 0.5);
+
+  /* ========================================
+   * COLORS - Text
+   * ======================================== */
+  --color-text-primary: #f0f6fc;    /* Bright white */
+  --color-text-secondary: #c9d1d9;  /* Light gray */
+  --color-text-muted: #8b949e;      /* Medium gray */
+  --color-text-dim: #6e7681;        /* Dark gray */
+  --color-text-placeholder: #484f58;
+
+  /* ========================================
+   * COLORS - Accent
+   * ======================================== */
+  --color-accent-blue: #58a6ff;
+  --color-accent-blue-muted: rgba(88, 166, 255, 0.15);
+  --color-accent-purple: #a371f7;
+  --color-accent-purple-muted: rgba(163, 113, 247, 0.15);
+  --color-accent-green: #3fb950;
+  --color-accent-green-muted: rgba(63, 185, 80, 0.15);
+  --color-accent-red: #f85149;
+  --color-accent-red-muted: rgba(248, 81, 73, 0.15);
+  --color-accent-yellow: #e3b341;
+  --color-accent-yellow-muted: rgba(227, 179, 65, 0.15);
+  --color-accent-orange: #d29922;
+  --color-accent-orange-muted: rgba(210, 153, 34, 0.15);
+  --color-accent-cyan: #39c5cf;
+
+  /* ========================================
+   * COLORS - Semantic
+   * ======================================== */
+  --color-success: var(--color-accent-green);
+  --color-success-bg: var(--color-accent-green-muted);
+  --color-error: var(--color-accent-red);
+  --color-error-bg: var(--color-accent-red-muted);
+  --color-warning: var(--color-accent-yellow);
+  --color-warning-bg: var(--color-accent-yellow-muted);
+  --color-info: var(--color-accent-blue);
+  --color-info-bg: var(--color-accent-blue-muted);
+
+  /* ========================================
+   * COLORS - Diff specific
+   * ======================================== */
+  --color-diff-add-bg: rgba(46, 160, 67, 0.15);
+  --color-diff-add-text: #7ee787;
+  --color-diff-add-line-number: rgba(63, 185, 80, 0.4);
+  --color-diff-delete-bg: rgba(248, 81, 73, 0.15);
+  --color-diff-delete-text: #ffa198;
+  --color-diff-delete-line-number: rgba(248, 81, 73, 0.4);
+  --color-diff-hunk-bg: rgba(88, 166, 255, 0.1);
+  --color-diff-hunk-text: var(--color-accent-blue);
+
+  /* ========================================
+   * COLORS - Risk levels
+   * ======================================== */
+  --color-risk-low: var(--color-accent-green);
+  --color-risk-medium: var(--color-accent-yellow);
+  --color-risk-high: var(--color-accent-red);
+
+  /* ========================================
+   * TYPOGRAPHY
+   * ======================================== */
+  --font-family-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  --font-family-mono: "SF Mono", "Fira Code", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+
+  /* Font sizes */
+  --font-size-xs: 0.6875rem;   /* 11px */
+  --font-size-sm: 0.75rem;     /* 12px */
+  --font-size-base: 0.875rem;  /* 14px */
+  --font-size-md: 1rem;        /* 16px */
+  --font-size-lg: 1.125rem;    /* 18px */
+  --font-size-xl: 1.25rem;     /* 20px */
+  --font-size-2xl: 1.5rem;     /* 24px */
+  --font-size-3xl: 2rem;       /* 32px */
+
+  /* Font weights */
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* Line heights */
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+  --line-height-code: 1.45;
+
+  /* ========================================
+   * SPACING
+   * ======================================== */
+  --spacing-0: 0;
+  --spacing-1: 0.25rem;   /* 4px */
+  --spacing-2: 0.5rem;    /* 8px */
+  --spacing-3: 0.75rem;   /* 12px */
+  --spacing-4: 1rem;      /* 16px */
+  --spacing-5: 1.25rem;   /* 20px */
+  --spacing-6: 1.5rem;    /* 24px */
+  --spacing-8: 2rem;      /* 32px */
+  --spacing-10: 2.5rem;   /* 40px */
+  --spacing-12: 3rem;     /* 48px */
+  --spacing-16: 4rem;     /* 64px */
+
+  /* ========================================
+   * BORDER RADIUS
+   * ======================================== */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-full: 9999px;
+
+  /* ========================================
+   * SHADOWS
+   * ======================================== */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.4);
+  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.5);
+  --shadow-glow-blue: 0 0 20px rgba(88, 166, 255, 0.3);
+  --shadow-glow-purple: 0 0 20px rgba(163, 113, 247, 0.3);
+
+  /* ========================================
+   * TRANSITIONS
+   * ======================================== */
+  --transition-fast: 0.1s ease;
+  --transition-normal: 0.2s ease;
+  --transition-slow: 0.3s ease;
+  --transition-colors: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
+
+  /* ========================================
+   * Z-INDEX SCALE
+   * ======================================== */
+  --z-base: 0;
+  --z-sticky: 10;
+  --z-dropdown: 100;
+  --z-overlay: 500;
+  --z-modal: 1000;
+  --z-toast: 1100;
+  --z-tooltip: 1200;
+
+  /* ========================================
+   * LAYOUT
+   * ======================================== */
+  --header-height: 50px;
+  --sidebar-width: 280px;
+  --sidebar-width-collapsed: 48px;
+  --content-max-width: 1400px;
+  --chunk-card-width: 320px;
+}
+
+/* ========================================
+ * UTILITY CLASSES
+ * ======================================== */
+
+/* Transitions */
+.transition-fast { transition: all var(--transition-fast); }
+.transition-normal { transition: all var(--transition-normal); }
+.transition-slow { transition: all var(--transition-slow); }
+
+/* Common badge styles */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--spacing-1) var(--spacing-2);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.badge-blue {
+  color: var(--color-accent-blue);
+  background: var(--color-accent-blue-muted);
+}
+
+.badge-purple {
+  color: var(--color-accent-purple);
+  background: var(--color-accent-purple-muted);
+}
+
+.badge-green {
+  color: var(--color-accent-green);
+  background: var(--color-accent-green-muted);
+}
+
+.badge-red {
+  color: var(--color-accent-red);
+  background: var(--color-accent-red-muted);
+}
+
+.badge-yellow {
+  color: var(--color-accent-yellow);
+  background: var(--color-accent-yellow-muted);
+}
+
+.badge-orange {
+  color: var(--color-accent-orange);
+  background: var(--color-accent-orange-muted);
+}
+
+/* Common card styles */
+.card {
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: var(--radius-md);
+  transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
+}
+
+.card-interactive {
+  cursor: pointer;
+}
+
+.card-interactive:hover {
+  border-color: var(--color-accent-blue);
+  box-shadow: var(--shadow-glow-blue);
+}
+
+/* Common button styles */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-2);
+  padding: var(--spacing-2) var(--spacing-3);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  text-decoration: none;
+}
+
+.btn-primary {
+  background: var(--color-accent-blue);
+  color: white;
+}
+
+.btn-primary:hover {
+  background: #4a9eff;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-text-muted);
+  border-color: var(--color-border-primary);
+}
+
+.btn-ghost:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+}
+
+/* Monospace text */
+.mono {
+  font-family: var(--font-family-mono);
+}
+
+/* Text colors */
+.text-primary { color: var(--color-text-primary); }
+.text-secondary { color: var(--color-text-secondary); }
+.text-muted { color: var(--color-text-muted); }
+.text-dim { color: var(--color-text-dim); }
+.text-blue { color: var(--color-accent-blue); }
+.text-purple { color: var(--color-accent-purple); }
+.text-green { color: var(--color-accent-green); }
+.text-red { color: var(--color-accent-red); }
+.text-yellow { color: var(--color-accent-yellow); }
+.text-orange { color: var(--color-accent-orange); }
+
+/* Background colors */
+.bg-primary { background: var(--color-bg-primary); }
+.bg-secondary { background: var(--color-bg-secondary); }
+.bg-tertiary { background: var(--color-bg-tertiary); }
+
+/* Flex utilities */
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.gap-1 { gap: var(--spacing-1); }
+.gap-2 { gap: var(--spacing-2); }
+.gap-3 { gap: var(--spacing-3); }
+.gap-4 { gap: var(--spacing-4); }
+
+/* Scrollbar styling for webkit browsers */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-primary);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-dim);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-primary) var(--color-bg-primary);
+}
