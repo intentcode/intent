@@ -1,10 +1,5 @@
-// In production (Vercel), use current origin. In dev, use localhost:3001
-function getApiBase(): string {
-  if (import.meta.env.DEV) {
-    return "http://localhost:3001";
-  }
-  return window.location.origin;
-}
+// In dev, frontend (5173) and backend (3001) are on different ports
+const API_BASE = import.meta.env.DEV ? "http://localhost:3001" : "";
 
 export interface User {
   id: string;
@@ -15,8 +10,8 @@ export interface User {
 
 export async function getCurrentUser(): Promise<User | null> {
   try {
-    const res = await fetch(`${getApiBase()}/api/auth/me`, {
-      credentials: 'include', // Include cookies for cross-origin requests
+    const res = await fetch(`${API_BASE}/api/auth/me`, {
+      credentials: 'include',
     });
     const data = await res.json();
     return data.user || null;
@@ -26,15 +21,16 @@ export async function getCurrentUser(): Promise<User | null> {
 }
 
 export function loginWithGitHub(redirect?: string) {
-  const url = new URL(`${getApiBase()}/api/auth/github`);
+  const params = new URLSearchParams();
   if (redirect) {
-    url.searchParams.set('redirect', redirect);
+    params.set('redirect', redirect);
   }
-  window.location.href = url.toString();
+  const query = params.toString();
+  window.location.href = `${API_BASE}/api/auth/github${query ? '?' + query : ''}`;
 }
 
 export async function logout(): Promise<void> {
-  await fetch(`${getApiBase()}/api/auth/logout`, {
+  await fetch(`${API_BASE}/api/auth/logout`, {
     method: 'POST',
     credentials: 'include',
   });
