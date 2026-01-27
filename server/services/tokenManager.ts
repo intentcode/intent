@@ -1,31 +1,25 @@
 import { readFileSync, existsSync } from "fs";
 import { createPrivateKey } from "crypto";
 import { SignJWT } from "jose";
+import { logger } from "../utils/logger";
 
-// ============================================
-// CONFIGURATION
-// ============================================
-
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-
-// Legacy OAuth App configuration (fallback)
-const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
-const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
-
-// GitHub App configuration (preferred - read-only permissions)
+// GitHub App configuration
 const GITHUB_APP_ID = process.env.GITHUB_APP_ID;
 const GITHUB_APP_CLIENT_ID = process.env.GITHUB_APP_CLIENT_ID;
 const GITHUB_APP_CLIENT_SECRET = process.env.GITHUB_APP_CLIENT_SECRET;
 const GITHUB_APP_PRIVATE_KEY_PATH = process.env.GITHUB_APP_PRIVATE_KEY_PATH;
 
+// Server-level GitHub token (for public repos / rate limiting)
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+
 // Load GitHub App private key if available
 let githubAppPrivateKey: string | null = null;
 if (GITHUB_APP_PRIVATE_KEY_PATH && existsSync(GITHUB_APP_PRIVATE_KEY_PATH)) {
   githubAppPrivateKey = readFileSync(GITHUB_APP_PRIVATE_KEY_PATH, "utf-8");
-  console.log("[GitHub App] Private key loaded from", GITHUB_APP_PRIVATE_KEY_PATH);
+  logger.info("token-manager", `GitHub App private key loaded from ${GITHUB_APP_PRIVATE_KEY_PATH}`);
 } else if (process.env.GITHUB_APP_PRIVATE_KEY) {
   githubAppPrivateKey = process.env.GITHUB_APP_PRIVATE_KEY.replace(/\\n/g, "\n");
-  console.log("[GitHub App] Private key loaded from environment variable");
+  logger.info("token-manager", "GitHub App private key loaded from env variable");
 }
 
 // Check if GitHub App is configured
@@ -37,28 +31,19 @@ export const isGitHubAppConfigured = !!(
 );
 
 if (isGitHubAppConfigured) {
-  console.log("[GitHub App] Configured with App ID:", GITHUB_APP_ID);
+  logger.info("token-manager", `GitHub App configured (App ID: ${GITHUB_APP_ID})`);
 } else {
-  console.log("[GitHub App] Not configured, falling back to OAuth App");
+  logger.info("token-manager", "GitHub App not configured, using OAuth fallback");
 }
 
-// Export OAuth config for auth routes
-export const oauthConfig = {
-  clientId: isGitHubAppConfigured ? GITHUB_APP_CLIENT_ID : GITHUB_CLIENT_ID,
-  clientSecret: isGitHubAppConfigured ? GITHUB_APP_CLIENT_SECRET : GITHUB_CLIENT_SECRET,
-  isGitHubApp: isGitHubAppConfigured,
+// Export credentials for auth routes
+export const githubAppCredentials = {
+  clientId: GITHUB_APP_CLIENT_ID,
+  clientSecret: GITHUB_APP_CLIENT_SECRET,
 };
-
-// ============================================
-// TOKEN CACHE
-// ============================================
 
 // Cache for installation tokens (key: installationId, value: { token, expiresAt })
 const installationTokenCache = new Map<number, { token: string; expiresAt: Date }>();
-
-// ============================================
-// TOKEN GENERATION
-// ============================================
 
 /**
  * Generate a JWT to authenticate as the GitHub App
@@ -99,14 +84,15 @@ export async function getInstallationId(owner: string, repo: string): Promise<nu
     );
 
     if (!response.ok) {
-      console.log(`[GitHub App] Installation not found for ${owner}/${repo}: ${response.status}`);
+      logger.debug("token-manager", `Installation not found for ${owner}/${repo} (${response.status})`);
       return null;
     }
 
     const data = await response.json();
+    logger.debug("token-manager", `Found installation ${data.id} for ${owner}/${repo}`);
     return data.id;
   } catch (error) {
-    console.error("[GitHub App] Error getting installation ID:", error);
+    logger.error("token-manager", `Error getting installation ID for ${owner}/${repo}:`, error);
     return null;
   }
 }
@@ -118,6 +104,7 @@ export async function getInstallationToken(installationId: number): Promise<stri
   // Check cache first
   const cached = installationTokenCache.get(installationId);
   if (cached && cached.expiresAt > new Date()) {
+    logger.debug("token-manager", `Using cached token for installation ${installationId}`);
     return cached.token;
   }
 
@@ -137,7 +124,7 @@ export async function getInstallationToken(installationId: number): Promise<stri
     );
 
     if (!response.ok) {
-      console.error(`[GitHub App] Failed to get installation token: ${response.status}`);
+      logger.error("token-manager", `Failed to get installation token: ${response.status}`);
       return null;
     }
 
@@ -147,14 +134,20 @@ export async function getInstallationToken(installationId: number): Promise<stri
     const expiresAt = new Date(Date.now() + 55 * 60 * 1000);
     installationTokenCache.set(installationId, { token: data.token, expiresAt });
 
+    logger.debug("token-manager", `Generated new token for installation ${installationId}, cached until ${expiresAt.toISOString()}`);
     return data.token;
   } catch (error) {
-    console.error("[GitHub App] Error getting installation token:", error);
+    logger.error("token-manager", `Error getting installation token for ${installationId}:`, error);
     return null;
   }
 }
 
 export type TokenSource = "installation" | "user" | "server" | null;
+
+export interface RepoAccessToken {
+  token: string | null;
+  source: TokenSource;
+}
 
 /**
  * Get a token for accessing a specific repository
@@ -164,13 +157,16 @@ export async function getRepoAccessToken(
   owner: string,
   repo: string,
   userToken?: string
-): Promise<{ token: string | null; source: TokenSource }> {
+): Promise<RepoAccessToken> {
+  logger.debug("token-manager", `Getting access token for ${owner}/${repo} (userToken: ${userToken ? "yes" : "no"})`);
+
   // 1. Try GitHub App installation token (read-only, preferred)
   if (isGitHubAppConfigured) {
     const installationId = await getInstallationId(owner, repo);
     if (installationId) {
       const token = await getInstallationToken(installationId);
       if (token) {
+        logger.debug("token-manager", `Using installation token for ${owner}/${repo}`);
         return { token, source: "installation" };
       }
     }
@@ -178,34 +174,23 @@ export async function getRepoAccessToken(
 
   // 2. Fall back to user's OAuth token
   if (userToken) {
+    logger.debug("token-manager", `Using user OAuth token for ${owner}/${repo}`);
     return { token: userToken, source: "user" };
   }
 
   // 3. Fall back to server token (for public repos)
   if (GITHUB_TOKEN) {
+    logger.debug("token-manager", `Using server token for ${owner}/${repo}`);
     return { token: GITHUB_TOKEN, source: "server" };
   }
 
+  logger.debug("token-manager", `No token available for ${owner}/${repo}`);
   return { token: null, source: null };
 }
 
 /**
- * Get GitHub API headers with optional authentication
+ * Get the server-level GitHub token
  */
-export function getGitHubHeaders(
-  accept: string = "application/vnd.github.v3+json",
-  userToken?: string
-): Record<string, string> {
-  const headers: Record<string, string> = {
-    Accept: accept,
-    "User-Agent": "Intent-App",
-  };
-
-  // Prefer user's OAuth token, fallback to server token
-  const token = userToken || GITHUB_TOKEN;
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
-  return headers;
+export function getServerToken(): string | undefined {
+  return GITHUB_TOKEN;
 }

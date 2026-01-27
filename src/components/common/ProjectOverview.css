@@ -1,0 +1,234 @@
+/**
+ * ProjectOverview Component Styles
+ */
+
+.project-overview {
+  background: linear-gradient(135deg, var(--color-bg-tertiary) 0%, var(--color-bg-secondary) 100%);
+  padding: 1.5rem 2rem;
+  border-bottom: 1px solid var(--color-border-primary);
+  animation: fadeIn 0.15s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.project-overview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1.5rem;
+}
+
+.project-overview-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1;
+}
+
+.project-overview-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.story-mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  background: var(--color-blue-15);
+  border: 1px solid rgba(56, 139, 253, 0.4);
+  border-radius: var(--radius-md);
+  color: var(--color-accent-blue);
+  font-size: var(--font-size-base);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.story-mode-btn:hover {
+  background: var(--color-blue-30);
+  border-color: rgba(56, 139, 253, 0.6);
+}
+
+.story-mode-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.project-overview-description {
+  color: var(--color-text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  margin: 0.5rem 0;
+  max-width: 800px;
+}
+
+.project-overview-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: var(--font-size-base);
+  color: var(--color-text-muted);
+  margin-top: 0.5rem;
+}
+
+.meta-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.meta-value {
+  color: var(--color-text-muted);
+}
+
+.meta-stars .meta-icon-styled {
+  color: var(--color-accent-yellow);
+  font-size: 1rem;
+}
+
+.meta-language .meta-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #3178c6;
+}
+
+.meta-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.meta-intents .meta-badge {
+  background: linear-gradient(135deg, var(--color-purple-20) 0%, var(--color-blue-20) 100%);
+  color: var(--color-accent-purple);
+  border: 1px solid rgba(136, 87, 255, 0.4);
+}
+
+.meta-files .meta-badge {
+  background: linear-gradient(135deg, var(--color-blue-20) 0%, var(--color-green-20) 100%);
+  color: var(--color-accent-blue);
+  border: 1px solid rgba(88, 166, 255, 0.4);
+}
+
+/* Branch info */
+.project-overview-branch-wrapper {
+  position: relative;
+  margin-top: 0.75rem;
+  width: fit-content;
+}
+
+.project-overview-branch {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: linear-gradient(135deg, var(--color-purple-10) 0%, var(--color-blue-10) 100%);
+  border: 1px solid rgba(136, 87, 255, 0.25);
+  border-radius: var(--radius-md);
+  width: fit-content;
+}
+
+.project-overview-branch.clickable {
+  cursor: pointer;
+  transition: all var(--transition-normal);
+}
+
+.project-overview-branch.clickable:hover {
+  background: linear-gradient(135deg, var(--color-purple-15) 0%, var(--color-blue-15) 100%);
+  border-color: rgba(136, 87, 255, 0.4);
+}
+
+.branch-chevron {
+  font-size: 0.625rem;
+  color: var(--color-text-muted);
+  margin-left: 0.25rem;
+  transition: transform var(--transition-normal);
+}
+
+.branch-chevron.open {
+  transform: rotate(180deg);
+}
+
+.pr-switcher-dropdown.branch-dropdown {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  left: 0;
+  z-index: 1000;
+}
+
+.branch-icon {
+  color: var(--color-accent-purple);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.branch-name {
+  color: var(--color-accent-blue);
+  font-weight: 600;
+  font-size: var(--font-size-base);
+}
+
+.branch-repo {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--color-gray-30);
+}
+
+/* Risk indicators */
+.project-overview-risk {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.risk-item {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+}
+
+.risk-item.risk-high {
+  background: var(--color-red-15);
+  color: var(--color-accent-red);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+.risk-item.risk-medium {
+  background: var(--color-orange-15);
+  color: var(--color-accent-orange);
+  border: 1px solid rgba(210, 153, 34, 0.3);
+}
+
+.risk-item.risk-low {
+  background: var(--color-green-15);
+  color: var(--color-accent-green);
+  border: 1px solid rgba(63, 185, 80, 0.3);
+}
+
+.risk-count {
+  font-weight: 600;
+}
+
+.risk-label {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}

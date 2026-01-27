@@ -1,5 +1,12 @@
 export type Language = "en" | "fr" | "es" | "de";
 
+export const LANGUAGES: { code: Language; label: string }[] = [
+  { code: "en", label: "EN" },
+  { code: "fr", label: "FR" },
+  { code: "es", label: "ES" },
+  { code: "de", label: "DE" },
+];
+
 const STORAGE_KEY = "intent-lang";
 const DEFAULT_LANG: Language = "en";
 const VALID_LANGS: Language[] = ["en", "fr", "es", "de"];

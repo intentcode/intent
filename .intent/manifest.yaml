@@ -47,3 +47,6 @@ intents:
   - id: "015"
     file: 015-navigation-enhancements.intent.md
     status: active
+  - id: "016"
+    file: 016-architecture-refactoring.intent.md
+    status: active

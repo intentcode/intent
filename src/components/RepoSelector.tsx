@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import type { DiffMode, DirectoryEntry, BranchInfo, BranchSuggestion } from "../lib/api";
 import { listDirs, parseGitHubURL, parseGitHubRepoURL, discoverBranches, discoverGitHubBranches } from "../lib/api";
+import "./RepoSelector.css";
 
 type SourceType = "local" | "github";
 type GitHubMode = "pr" | "branches";

@@ -1,44 +1,9 @@
-/* Import design system theme */
+/* Design System */
 @import './styles/theme.css';
+@import './styles/globals.css';
 
-/* Global resets and base styles */
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-
-html {
-  font-family: var(--font-family-sans);
-  line-height: var(--line-height-normal);
-  font-weight: var(--font-weight-normal);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-body {
-  margin: 0;
-  min-width: 320px;
-  min-height: 100vh;
-  background-color: var(--color-bg-primary);
-  color: var(--color-text-primary);
-}
-
+/* Root element */
 #root {
   width: 100%;
-  height: 100vh;
-}
-
-/* Focus styles for accessibility */
-:focus-visible {
-  outline: 2px solid var(--color-accent-blue);
-  outline-offset: 2px;
-}
-
-/* Selection styles */
-::selection {
-  background-color: var(--color-accent-blue-muted);
-  color: var(--color-text-primary);
+  min-height: 100vh;
 }

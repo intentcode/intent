@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { TRANSLATIONS } from './language';
+import { TRANSLATIONS } from '../language';
 
 const LANGUAGES = ['en', 'fr', 'es', 'de'] as const;
 

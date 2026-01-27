@@ -1,0 +1,122 @@
+/**
+ * LoadingState Component Styles
+ * Uses CSS variables from theme.css
+ */
+
+/* Loading */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: var(--color-text-muted);
+}
+
+/* Loading Page - In-page loading indicator with violet box */
+.loading-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 280px;
+  padding: var(--spacing-12) var(--spacing-16);
+  gap: var(--spacing-6);
+  margin: var(--spacing-8) auto;
+  max-width: 400px;
+  background: var(--color-violet-8);
+  border: 1px solid var(--color-violet-25);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 4px 24px var(--color-violet-10);
+}
+
+/* Icon wrapper with spinner around it */
+.loading-icon-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 80px;
+  height: 80px;
+}
+
+.loading-icon {
+  width: 32px;
+  height: 32px;
+  z-index: 1;
+}
+
+/* Context-specific icon colors */
+.loading-icon.github {
+  color: var(--color-text-secondary);
+}
+
+.loading-icon.story {
+  color: var(--color-accent-purple);
+}
+
+.loading-icon.diff {
+  color: var(--color-accent-blue);
+}
+
+.loading-icon.folder {
+  color: var(--color-accent-green);
+}
+
+/* Spinner around the icon */
+.loading-icon-wrapper .loading-spinner {
+  position: absolute;
+  width: 64px;
+  height: 64px;
+  border: 3px solid var(--color-violet-15);
+  border-top-color: var(--color-violet);
+  border-radius: var(--radius-full);
+  animation: spin 1s linear infinite;
+}
+
+/* GitHub context - gray spinner */
+.loading-icon.github ~ .loading-spinner {
+  border-color: var(--color-gray-15);
+  border-top-color: var(--color-text-secondary);
+}
+
+/* Story context - purple spinner */
+.loading-icon.story ~ .loading-spinner {
+  border-color: var(--color-accent-purple-muted);
+  border-top-color: var(--color-accent-purple);
+}
+
+/* Diff context - blue spinner */
+.loading-icon.diff ~ .loading-spinner {
+  border-color: var(--color-accent-blue-muted);
+  border-top-color: var(--color-accent-blue);
+}
+
+/* Folder context - green spinner */
+.loading-icon.folder ~ .loading-spinner {
+  border-color: var(--color-accent-green-muted);
+  border-top-color: var(--color-accent-green);
+}
+
+.loading-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-2);
+  font-size: var(--font-size-lg);
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+.loading-repo {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-base);
+  color: var(--color-text-muted);
+  padding: var(--spacing-2) var(--spacing-4);
+  background: var(--color-violet-10);
+  border: 1px solid var(--color-violet-20);
+  border-radius: var(--radius-md);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

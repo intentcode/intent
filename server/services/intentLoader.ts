@@ -7,7 +7,69 @@ import {
   type Manifest,
 } from "../../src/lib/parseIntentV2";
 import { resolveAnchor, type AnchorResult } from "../../src/lib/anchorResolver";
-import { getGitHubHeaders } from "./tokenManager";
+import { getGitHubHeaders } from "../utils/github";
+import { logger } from "../utils/logger";
+
+// ============================================
+// FILE CONTENT CACHE
+// ============================================
+
+/**
+ * In-memory cache for GitHub file contents
+ * Key: "owner/repo/ref/filepath"
+ * Value: { content, expiresAt }
+ * TTL: 5 minutes (files don't change often during a review session)
+ */
+const FILE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+interface CacheEntry {
+  content: string;
+  expiresAt: Date;
+}
+
+const fileCache = new Map<string, CacheEntry>();
+
+// Cache stats for debugging
+let cacheHits = 0;
+let cacheMisses = 0;
+
+function getCacheKey(owner: string, repo: string, ref: string, filePath: string): string {
+  return `${owner}/${repo}/${ref}/${filePath}`;
+}
+
+function getCachedFile(key: string): string | null {
+  const entry = fileCache.get(key);
+  if (entry && entry.expiresAt > new Date()) {
+    cacheHits++;
+    return entry.content;
+  }
+  // Expired or not found
+  if (entry) {
+    fileCache.delete(key); // Clean up expired entry
+  }
+  cacheMisses++;
+  return null;
+}
+
+function setCachedFile(key: string, content: string): void {
+  fileCache.set(key, {
+    content,
+    expiresAt: new Date(Date.now() + FILE_CACHE_TTL_MS),
+  });
+}
+
+/** Get cache stats for debugging */
+export function getCacheStats(): { hits: number; misses: number; size: number } {
+  return { hits: cacheHits, misses: cacheMisses, size: fileCache.size };
+}
+
+/** Clear the cache (useful for testing or manual refresh) */
+export function clearFileCache(): void {
+  fileCache.clear();
+  cacheHits = 0;
+  cacheMisses = 0;
+  logger.info("intent-loader", "File cache cleared");
+}
 
 // ============================================
 // TYPES
@@ -106,11 +168,16 @@ export function loadLocalManifest(repoPath: string): Manifest | null {
   const manifestPath = path.join(repoPath, ".intent", "manifest.yaml");
 
   if (!existsSync(manifestPath)) {
+    logger.debug("intent-loader", `No manifest at ${manifestPath}`);
     return null;
   }
 
   const manifestContent = readFileSync(manifestPath, "utf-8");
-  return parseManifest(manifestContent);
+  const manifest = parseManifest(manifestContent);
+  if (manifest) {
+    logger.debug("intent-loader", `Loaded local manifest with ${manifest.intents.length} intents`);
+  }
+  return manifest;
 }
 
 /**
@@ -149,6 +216,7 @@ export function loadLocalIntents(
     }
   }
 
+  logger.debug("intent-loader", `Loaded ${parsedIntents.length} local intents${lang ? ` (lang=${lang})` : ""}`);
   return parsedIntents;
 }
 
@@ -183,13 +251,34 @@ export async function loadGitHubManifest(
     });
 
     if (!response.ok) {
+      // Auth errors should be propagated, not silently ignored
+      if (response.status === 401 || response.status === 403) {
+        const errorBody = await response.text();
+        logger.error("intent-loader", "Auth error loading manifest:", response.status, errorBody);
+        throw new Error(`GitHub authentication failed (${response.status}). Please log in again.`);
+      }
+      // 404 means no manifest - that's OK
+      if (response.status === 404) {
+        logger.debug("intent-loader", "No manifest found (404)");
+        return null;
+      }
+      // Other errors
+      logger.warn("intent-loader", "Error loading manifest:", response.status);
       return null;
     }
 
     const manifestContent = await response.text();
-    return parseManifest(manifestContent);
+    const manifest = parseManifest(manifestContent);
+    if (manifest) {
+      logger.debug("intent-loader", `Loaded GitHub manifest for ${owner}/${repo}@${ref} with ${manifest.intents.length} intents`);
+    }
+    return manifest;
   } catch (error) {
-    console.error("[IntentLoader] Error loading GitHub manifest:", error);
+    // Re-throw auth errors
+    if (error instanceof Error && error.message.includes("authentication")) {
+      throw error;
+    }
+    logger.error("intent-loader", "Error loading GitHub manifest:", error);
     return null;
   }
 }
@@ -205,11 +294,10 @@ export async function loadGitHubIntents(
   lang?: string,
   accessToken?: string
 ): Promise<IntentV2[]> {
-  const parsedIntents: IntentV2[] = [];
+  const activeEntries = manifest.intents.filter(e => e.status === "active");
 
-  for (const intentEntry of manifest.intents) {
-    if (intentEntry.status !== "active") continue;
-
+  // Load all intents in parallel
+  const intentPromises = activeEntries.map(async (intentEntry) => {
     const baseName = intentEntry.file.replace(".intent.md", "");
 
     // Try language-specific first
@@ -227,18 +315,20 @@ export async function loadGitHubIntents(
     }
 
     if (intentContent) {
-      const parsed = parseIntentV2(intentContent, lang || "en");
-      if (parsed) {
-        parsedIntents.push(parsed);
-      }
+      return parseIntentV2(intentContent, lang || "en");
     }
-  }
+    return null;
+  });
 
+  const results = await Promise.all(intentPromises);
+  const parsedIntents = results.filter((intent): intent is IntentV2 => intent !== null);
+
+  logger.debug("intent-loader", `Loaded ${parsedIntents.length} GitHub intents for ${owner}/${repo}@${ref}${lang ? ` (lang=${lang})` : ""}`);
   return parsedIntents;
 }
 
 /**
- * Load file content from GitHub
+ * Load file content from GitHub (with caching)
  */
 export async function loadGitHubFileContent(
   owner: string,
@@ -247,6 +337,15 @@ export async function loadGitHubFileContent(
   ref: string,
   accessToken?: string
 ): Promise<string | null> {
+  const cacheKey = getCacheKey(owner, repo, ref, filePath);
+
+  // 1. Check cache first
+  const cached = getCachedFile(cacheKey);
+  if (cached !== null) {
+    return cached;
+  }
+
+  // 2. Cache miss - fetch from GitHub
   try {
     const url = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${ref}`;
     const response = await fetch(url, {
@@ -257,7 +356,12 @@ export async function loadGitHubFileContent(
       return null;
     }
 
-    return await response.text();
+    const content = await response.text();
+
+    // 3. Store in cache
+    setCachedFile(cacheKey, content);
+
+    return content;
   } catch (error) {
     return null;
   }
@@ -276,6 +380,7 @@ export function resolveLocalAnchors(
   manifest: Manifest,
   changedIntentFiles: string[] = []
 ): ResolvedIntent[] {
+  logger.debug("intent-loader", `Resolving anchors for ${intents.length} local intents`);
   return intents.map((intent, idx) => {
     const intentFileName = manifest.intents[idx]?.file || "";
     const intentFilePath = `.intent/intents/${intentFileName}`;
@@ -327,41 +432,31 @@ export function resolveLocalAnchors(
 /**
  * Resolve anchors for intents using GitHub file content
  */
-export async function resolveGitHubAnchors(
+/**
+ * Resolve anchors for intents using pre-fetched file contents (no network calls)
+ */
+export function resolveAnchorsWithContent(
   intents: IntentV2[],
-  owner: string,
-  repo: string,
-  ref: string,
   manifest: Manifest,
-  changedIntentFiles: string[] = [],
-  accessToken?: string
-): Promise<ResolvedIntent[]> {
-  const resolvedIntents: ResolvedIntent[] = [];
+  fileContents: Record<string, string>,
+  changedIntentFiles: string[] = []
+): ResolvedIntent[] {
+  logger.debug("intent-loader", `Resolving anchors for ${intents.length} intents using ${Object.keys(fileContents).length} cached files`);
 
-  for (let idx = 0; idx < intents.length; idx++) {
-    const intent = intents[idx];
+  const resolvedIntents: ResolvedIntent[] = intents.map((intent, idx) => {
     const intentFileName = manifest.intents[idx]?.file || "";
     const intentFilePath = `.intent/intents/${intentFileName}`;
     const isNew = changedIntentFiles.some(
       (f) => f.includes(intentFileName) || f === intentFilePath
     );
 
-    const resolvedChunks: ResolvedChunk[] = [];
-
-    for (const chunk of intent.chunks) {
+    const resolvedChunks: ResolvedChunk[] = intent.chunks.map((chunk) => {
       let resolved: AnchorResult | null = null;
       let hashMatch: boolean | null = null;
       let resolvedFile: string | null = null;
 
       for (const filePath of intent.frontmatter.files) {
-        const fileContent = await loadGitHubFileContent(
-          owner,
-          repo,
-          filePath,
-          ref,
-          accessToken
-        );
-
+        const fileContent = fileContents[filePath];
         if (fileContent) {
           resolved = resolveAnchor(chunk.anchor, fileContent);
           if (resolved) {
@@ -374,7 +469,7 @@ export async function resolveGitHubAnchors(
         }
       }
 
-      resolvedChunks.push({
+      return {
         anchor: chunk.anchor,
         title: chunk.title,
         description: chunk.description,
@@ -384,18 +479,54 @@ export async function resolveGitHubAnchors(
         resolved,
         resolvedFile,
         hashMatch,
-      });
-    }
+      };
+    });
 
-    resolvedIntents.push({
+    return {
       ...intent,
       isNew,
       intentFilePath,
       resolvedChunks,
-    });
-  }
+    };
+  });
 
   return resolvedIntents;
+}
+
+/**
+ * Resolve anchors for intents by fetching files from GitHub (legacy, use resolveAnchorsWithContent when possible)
+ */
+export async function resolveGitHubAnchors(
+  intents: IntentV2[],
+  owner: string,
+  repo: string,
+  ref: string,
+  manifest: Manifest,
+  changedIntentFiles: string[] = [],
+  accessToken?: string
+): Promise<ResolvedIntent[]> {
+  logger.debug("intent-loader", `Fetching files for ${intents.length} GitHub intents (${owner}/${repo}@${ref})`);
+
+  // Collect all unique files we need to fetch
+  const allFiles = new Set<string>();
+  for (const intent of intents) {
+    for (const filePath of intent.frontmatter.files) {
+      allFiles.add(filePath);
+    }
+  }
+
+  // Fetch all files in parallel
+  const fileContents: Record<string, string> = {};
+  const filePromises = Array.from(allFiles).map(async (filePath) => {
+    const content = await loadGitHubFileContent(owner, repo, filePath, ref, accessToken);
+    if (content) {
+      fileContents[filePath] = content;
+    }
+  });
+  await Promise.all(filePromises);
+
+  // Use the shared resolution logic
+  return resolveAnchorsWithContent(intents, manifest, fileContents, changedIntentFiles);
 }
 
 // ============================================
@@ -420,6 +551,10 @@ export function applyOverlaps(intents: ResolvedIntent[]): ResolvedIntent[] {
 
   // Detect overlaps
   const overlapsMap = detectOverlaps(allChunks);
+
+  if (overlapsMap.size > 0) {
+    logger.debug("intent-loader", `Detected ${overlapsMap.size} overlapping chunks`);
+  }
 
   // Apply overlaps to chunks
   return intents.map((intent) => ({

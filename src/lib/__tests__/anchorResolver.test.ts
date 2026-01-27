@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveAnchor, resolveChunks } from './anchorResolver'
+import { resolveAnchor, resolveChunks } from '../anchorResolver'
 
 describe('resolveAnchor', () => {
   describe('@class anchor', () => {

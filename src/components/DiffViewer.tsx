@@ -1,8 +1,13 @@
-import { useState, useMemo, useLayoutEffect, useRef, useCallback, useEffect } from "react";
+import { useState, useMemo, useRef, useCallback, useEffect, memo } from "react";
 import type { DiffFile, DiffHunk } from "../lib/parseDiff";
 import type { ResolvedChunkAPI } from "../lib/api";
+import { detectLanguage } from "../lib/fileUtils";
+import { CodePanel, ChunksPanel } from "./diffViewerComponents";
+import type { CodePanelHandle } from "./diffViewerComponents";
 import Prism from "prismjs";
+
 import "prismjs/components/prism-python";
+import "./DiffViewer.css";
 import "prismjs/components/prism-typescript";
 import "prismjs/components/prism-javascript";
 import "prismjs/components/prism-jsx";
@@ -13,37 +18,37 @@ import "prismjs/components/prism-yaml";
 import "prismjs/components/prism-bash";
 import "prismjs/components/prism-markdown";
 
-// Detect language from filename extension
-function detectLanguage(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
-  const langMap: Record<string, string> = {
-    'py': 'python',
-    'ts': 'typescript',
-    'tsx': 'tsx',
-    'js': 'javascript',
-    'jsx': 'jsx',
-    'css': 'css',
-    'json': 'json',
-    'yaml': 'yaml',
-    'yml': 'yaml',
-    'sh': 'bash',
-    'bash': 'bash',
-    'md': 'markdown',
-  };
-  return langMap[ext] || 'javascript';
-}
+// Cache for syntax-highlighted lines (avoids re-highlighting on every render)
+const highlightCache = new Map<string, string>();
+const MAX_CACHE_SIZE = 10000; // Limit cache size to prevent memory issues
 
-// Highlight a single line of code
+// Highlight a single line of code with caching
 function highlightLine(line: string, language: string): string {
+  const cacheKey = `${language}:${line}`;
+
+  const cached = highlightCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  let result: string;
   try {
     const grammar = Prism.languages[language];
     if (grammar) {
-      return Prism.highlight(line, grammar, language);
+      result = Prism.highlight(line, grammar, language);
+    } else {
+      result = line.replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
   } catch {
     // Fallback to plain text
+    result = line.replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
-  return line.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Add to cache, clear if too large
+  if (highlightCache.size >= MAX_CACHE_SIZE) {
+    highlightCache.clear();
+  }
+  highlightCache.set(cacheKey, result);
+
+  return result;
 }
 
 interface Translations {
@@ -75,7 +80,7 @@ interface Translations {
 
 type ViewMode = "diff" | "browse";
 
-interface DiffViewerProps {
+interface DiffFileViewerProps {
   file?: DiffFile;
   filename: string;
   onLinkClick?: (targetFile: string, targetRange: string) => void;
@@ -90,19 +95,13 @@ interface DiffViewerProps {
   translations?: Translations;
   // Anchor of chunk to expand (controlled from parent)
   expandChunkAnchor?: string;
+  // Selected intent ID for highlighting (passed separately for memo stability)
+  selectedIntentId?: string | null;
 }
 
 const LINE_HEIGHT = 24; // pixels per line
 const COLLAPSED_CARD_HEIGHT = 40; // approximate height of collapsed chunk card
 const MIN_GAP_BETWEEN_CARDS = 8; // minimum gap between cards
-
-// Chunk target info for connectors and highlighting
-interface ChunkTarget {
-  chunkId: string;
-  startLine: number;
-  endLine: number;
-  topPosition: number;
-}
 
 interface LineMaps {
   newLineMap: Map<number, number>;  // newLineNumber -> rowIndex
@@ -157,20 +156,17 @@ const DEFAULT_TRANSLATIONS: Translations = {
   deepDiveTooltip: "Copy context to explore this chunk with Claude",
 };
 
-export function DiffViewer({ file, filename, onLinkClick, resolvedChunks, intentTitle, fullFileContent, viewMode = "diff", translations = DEFAULT_TRANSLATIONS, expandChunkAnchor }: DiffViewerProps) {
-  const [expandedChunks, setExpandedChunks] = useState<Set<string>>(new Set());
-  const [chunkHeights, setChunkHeights] = useState<Map<string, number>>(new Map());
+function DiffFileViewerInner({ file, filename, onLinkClick, resolvedChunks, intentTitle, fullFileContent, viewMode = "diff", translations = DEFAULT_TRANSLATIONS, expandChunkAnchor, selectedIntentId }: DiffFileViewerProps) {
   const [activeChunk, setActiveChunk] = useState<string | null>(null);
-  const [highlightedLines, setHighlightedLines] = useState<Set<number>>(new Set());
-  const [codePanelWidth, setCodePanelWidth] = useState(500);
   const [toast, setToast] = useState<string | null>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const codePanelRef = useRef<HTMLDivElement>(null);
-  const chunkRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const lineRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const codePanelRef = useRef<CodePanelHandle>(null);
 
-  const toggleChunk = (chunkId: string) => {
-    setExpandedChunks((prev) => {
+  // Local state for expanded chunks (isolated per file)
+  const [expandedChunks, setExpandedChunks] = useState<Set<string>>(new Set());
+
+  // Local chunk expansion functions
+  const toggleChunk = useCallback((chunkId: string) => {
+    setExpandedChunks(prev => {
       const next = new Set(prev);
       if (next.has(chunkId)) {
         next.delete(chunkId);
@@ -179,17 +175,30 @@ export function DiffViewer({ file, filename, onLinkClick, resolvedChunks, intent
       }
       return next;
     });
-  };
+  }, []);
+
+  const expandChunk = useCallback((chunkId: string) => {
+    setExpandedChunks(prev => {
+      if (prev.has(chunkId)) return prev;
+      const next = new Set(prev);
+      next.add(chunkId);
+      return next;
+    });
+  }, []);
+
+  const isExpanded = useCallback((chunkId: string) => {
+    return expandedChunks.has(chunkId);
+  }, [expandedChunks]);
 
   // Expand chunk when controlled from parent (e.g., from story mode click)
   useEffect(() => {
     if (expandChunkAnchor) {
-      setExpandedChunks(prev => new Set(prev).add(expandChunkAnchor));
+      expandChunk(expandChunkAnchor);
     }
-  }, [expandChunkAnchor]);
+  }, [expandChunkAnchor, expandChunk]);
 
   // Generate deep dive prompt and copy to clipboard
-  const handleDeepDive = async (chunk: ResolvedChunkAPI) => {
+  const handleDeepDive = useCallback(async (chunk: ResolvedChunkAPI) => {
     const t = translations;
 
     // Extract code snippet from file content
@@ -250,15 +259,34 @@ ${t.promptQuestionPlaceholder}
     }
 
     setTimeout(() => setToast(null), 5000);
-  };
+  }, [translations, fullFileContent, filename, intentTitle]);
 
   // Determine display mode
-  const isBrowseMode = viewMode === "browse" && fullFileContent;
+  const isBrowseMode = viewMode === "browse" && !!fullFileContent;
   const isDiffMode = !isBrowseMode && !!file && file.hunks.length > 0;
-  const isIntentsOnly = !isDiffMode && !isBrowseMode && resolvedChunks && resolvedChunks.length > 0;
+  const isIntentsOnly = !isDiffMode && !isBrowseMode && !!resolvedChunks && resolvedChunks.length > 0;
 
   // Detect language for syntax highlighting
   const language = useMemo(() => detectLanguage(filename), [filename]);
+
+  // Pre-compute highlighted lines for browse mode (avoids re-highlighting on every render)
+  const highlightedBrowseLines = useMemo(() => {
+    if (!fullFileContent) return [];
+    return fullFileContent.split('\n').map(line => highlightLine(line, language));
+  }, [fullFileContent, language]);
+
+  // Pre-compute highlighted lines for diff mode hunks
+  const highlightedDiffLines = useMemo(() => {
+    if (!file) return new Map<string, string>();
+    const cache = new Map<string, string>();
+    file.hunks.forEach((hunk, hunkIdx) => {
+      hunk.lines.forEach((line, lineIdx) => {
+        const key = `${hunkIdx}-${lineIdx}`;
+        cache.set(key, highlightLine(line.content, language));
+      });
+    });
+    return cache;
+  }, [file, language]);
 
   const hasV2Chunks = resolvedChunks && resolvedChunks.length > 0;
 
@@ -279,164 +307,128 @@ ${t.promptQuestionPlaceholder}
     return { newLineMap: new Map(), oldLineMap: new Map() };
   }, [file, isBrowseMode, fullFileContent]);
 
-  // Measure chunk heights after render - use useLayoutEffect for synchronous measurement
-  useLayoutEffect(() => {
-    const measureHeights = () => {
-      const newHeights = new Map<string, number>();
-      chunkRefs.current.forEach((el, id) => {
-        if (el) {
-          newHeights.set(id, el.getBoundingClientRect().height);
+  // Calculate absolute top positions for chunk cards (calculated once, never changes)
+  const chunkTops = useMemo(() => {
+    const tops: number[] = [];
+
+    if (!hasV2Chunks || !resolvedChunks) return tops;
+
+    // Track last used position for stacking unresolved chunks
+    let stackPosition = 0;
+
+    resolvedChunks.forEach((chunk) => {
+      if (!chunk.resolved) {
+        // Unresolved chunks stack at the end
+        tops.push(stackPosition);
+        stackPosition += COLLAPSED_CARD_HEIGHT + MIN_GAP_BETWEEN_CARDS;
+        return;
+      }
+
+      if (isDiffMode || isBrowseMode) {
+        const rowIndex = lineMaps.newLineMap.get(chunk.resolved.startLine);
+        if (rowIndex !== undefined) {
+          const top = rowIndex * LINE_HEIGHT;
+          tops.push(top);
+          // Update stack position if this chunk is lower
+          stackPosition = Math.max(stackPosition, top + COLLAPSED_CARD_HEIGHT + MIN_GAP_BETWEEN_CARDS);
+        } else {
+          // Chunk not visible in diff, stack it
+          tops.push(stackPosition);
+          stackPosition += COLLAPSED_CARD_HEIGHT + MIN_GAP_BETWEEN_CARDS;
         }
-      });
-      setChunkHeights(newHeights);
-    };
-
-    // Measure immediately (useLayoutEffect runs synchronously after DOM mutations)
-    measureHeights();
-
-    // Also measure again after a frame to catch any CSS transitions
-    const rafId = requestAnimationFrame(() => {
-      measureHeights();
+      } else {
+        // Fallback: stack chunks
+        tops.push(stackPosition);
+        stackPosition += COLLAPSED_CARD_HEIGHT + MIN_GAP_BETWEEN_CARDS;
+      }
     });
 
-    return () => cancelAnimationFrame(rafId);
-  }, [expandedChunks]);
+    return tops;
+  }, [isDiffMode, isBrowseMode, hasV2Chunks, resolvedChunks, lineMaps]);
 
-  // Measure code panel width for SVG connectors
-  useLayoutEffect(() => {
-    if (codePanelRef.current) {
-      setCodePanelWidth(codePanelRef.current.offsetWidth);
+  // Calculate dynamic container height: base height + extra for expanded chunks
+  const EXPANDED_CHUNK_EXTRA_HEIGHT = 250; // estimated extra height when a chunk is expanded
+  const baseContainerHeight = useMemo(() => {
+    if (isBrowseMode && fullFileContent) {
+      return fullFileContent.split('\n').length * LINE_HEIGHT;
     }
-  }, [file, fullFileContent]);
-
-  // Calculate non-overlapping positions for chunk cards
-  const calculatePositions = useMemo(() => {
-    const positions: number[] = [];
-
-    // Use v2 chunks if available, otherwise fall back to v1
-    if (hasV2Chunks && resolvedChunks) {
-      // First pass: separate chunks into visible-in-diff and not-visible
-      const visibleChunks: { idx: number; rowIndex: number }[] = [];
-      const notVisibleChunks: number[] = [];
-
-      resolvedChunks.forEach((chunk, i) => {
-        if (!chunk.resolved) {
-          notVisibleChunks.push(i);
-          return;
-        }
-
-        if (isDiffMode || isBrowseMode) {
-          // In diff or browse mode, use line maps for positioning
-          const rowIndex = lineMaps.newLineMap.get(chunk.resolved.startLine);
-          if (rowIndex !== undefined) {
-            visibleChunks.push({ idx: i, rowIndex });
-          } else {
-            notVisibleChunks.push(i);
-          }
-        } else {
-          // Intents-only mode: all chunks are "visible"
-          visibleChunks.push({ idx: i, rowIndex: i * 100 });
-        }
-      });
-
-      // Sort visible chunks by their row index
-      visibleChunks.sort((a, b) => a.rowIndex - b.rowIndex);
-
-      // Position visible chunks first
-      let lastBottom = 0;
-      const tempPositions: Map<number, number> = new Map();
-
-      for (const { idx, rowIndex } of visibleChunks) {
-        const chunk = resolvedChunks[idx];
-        const idealTop = rowIndex * LINE_HEIGHT;
-        const actualTop = Math.max(idealTop, lastBottom + MIN_GAP_BETWEEN_CARDS);
-        tempPositions.set(idx, actualTop);
-
-        const chunkId = chunk.anchor;
-        const height = chunkHeights.get(chunkId) || COLLAPSED_CARD_HEIGHT;
-        lastBottom = actualTop + height;
-      }
-
-      // Position not-visible chunks at the end
-      for (const idx of notVisibleChunks) {
-        const chunk = resolvedChunks[idx];
-        const actualTop = lastBottom + MIN_GAP_BETWEEN_CARDS;
-        tempPositions.set(idx, actualTop);
-
-        const chunkId = chunk.anchor;
-        const height = chunkHeights.get(chunkId) || COLLAPSED_CARD_HEIGHT;
-        lastBottom = actualTop + height;
-      }
-
-      // Build final positions array in original order
-      for (let i = 0; i < resolvedChunks.length; i++) {
-        positions.push(tempPositions.get(i) || 0);
-      }
+    if (file) {
+      let totalLines = 0;
+      file.hunks.forEach(hunk => { totalLines += hunk.lines.length; });
+      return totalLines * LINE_HEIGHT;
     }
-
-    return positions;
-  }, [isDiffMode, isBrowseMode, hasV2Chunks, resolvedChunks, lineMaps, chunkHeights]);
-
-  // Build chunk targets for connectors and highlighting
-  const chunkTargets = useMemo<ChunkTarget[]>(() => {
-    const targets: ChunkTarget[] = [];
-
-    if (hasV2Chunks && resolvedChunks) {
-      resolvedChunks.forEach((chunk, i) => {
-        if (chunk.resolved) {
-          targets.push({
-            chunkId: chunk.anchor,
-            startLine: chunk.resolved.startLine,
-            endLine: chunk.resolved.endLine,
-            topPosition: calculatePositions[i] || 0,
-          });
-        }
-      });
+    // For intents-only mode, use chunk positions
+    if (chunkTops.length > 0) {
+      return Math.max(...chunkTops) + 200;
     }
+    return 400;
+  }, [isBrowseMode, fullFileContent, file, chunkTops]);
 
-    return targets;
-  }, [hasV2Chunks, resolvedChunks, calculatePositions]);
+  // Count expanded chunks and calculate total container height
+  const expandedChunksCount = useMemo(() => {
+    if (!resolvedChunks) return 0;
+    return resolvedChunks.filter(c => isExpanded(c.anchor)).length;
+  }, [resolvedChunks, isExpanded]);
+
+  const chunkPanelHeight = baseContainerHeight + (expandedChunksCount * EXPANDED_CHUNK_EXTRA_HEIGHT);
 
   // Handle chunk activation (click or hover)
   const handleChunkActivate = useCallback((chunkId: string, startLine: number, endLine: number) => {
     setActiveChunk(chunkId);
 
-    // Set highlighted lines
-    const lines = new Set<number>();
+    // Get the code panel element for this file
+    const panel = codePanelRef.current?.getElement();
+    if (!panel) return;
+
+    // Clear previous highlights in this file's panel
+    panel.querySelectorAll('.line-highlighted').forEach(el => {
+      el.classList.remove('line-highlighted');
+    });
+
+    // Add new highlights in this file's panel
     for (let i = startLine; i <= endLine; i++) {
-      lines.add(i);
+      const lineEl = panel.querySelector(`[data-line="${i}"]`);
+      lineEl?.classList.add('line-highlighted');
     }
-    setHighlightedLines(lines);
 
     // Scroll to the target lines in code panel
-    const firstLineEl = lineRefs.current.get(startLine);
-    if (firstLineEl && codePanelRef.current) {
-      const panelRect = codePanelRef.current.getBoundingClientRect();
-      const lineRect = firstLineEl.getBoundingClientRect();
-      const scrollTop = lineRect.top - panelRect.top + codePanelRef.current.scrollTop - 50;
-      codePanelRef.current.scrollTo({ top: Math.max(0, scrollTop), behavior: 'smooth' });
-    }
+    codePanelRef.current?.scrollToLine(startLine);
   }, []);
 
   const handleChunkDeactivate = useCallback(() => {
     setActiveChunk(null);
-    setHighlightedLines(new Set());
+    // Clear highlights in this file's panel
+    const panel = codePanelRef.current?.getElement();
+    panel?.querySelectorAll('.line-highlighted').forEach(el => {
+      el.classList.remove('line-highlighted');
+    });
   }, []);
 
-  const handleLinkClick = (targetAnchor: string) => {
+  const handleLinkClick = useCallback((targetAnchor: string) => {
     // Find the target chunk by anchor
     const targetChunk = resolvedChunks?.find(c => c.anchor === targetAnchor);
     if (targetChunk?.resolved) {
-      // Highlight the target lines
-      const lines = new Set<number>();
-      for (let i = targetChunk.resolved.startLine; i <= targetChunk.resolved.endLine; i++) {
-        lines.add(i);
+      const panel = codePanelRef.current?.getElement();
+
+      // Clear previous highlights in this file's panel
+      panel?.querySelectorAll('.line-highlighted').forEach(el => {
+        el.classList.remove('line-highlighted');
+      });
+
+      // Highlight the target lines in this file's panel
+      if (panel) {
+        for (let i = targetChunk.resolved.startLine; i <= targetChunk.resolved.endLine; i++) {
+          const lineEl = panel.querySelector(`[data-line="${i}"]`);
+          lineEl?.classList.add('line-highlighted');
+        }
       }
-      setHighlightedLines(lines);
       setActiveChunk(targetAnchor);
 
       // Expand the target chunk
-      setExpandedChunks(prev => new Set(prev).add(targetAnchor));
+      expandChunk(targetAnchor);
+
+      // Scroll to the code lines
+      codePanelRef.current?.scrollToLine(targetChunk.resolved.startLine);
 
       // Scroll to the chunk card
       setTimeout(() => {
@@ -448,75 +440,37 @@ ${t.promptQuestionPlaceholder}
 
       // Clear highlight after a few seconds
       setTimeout(() => {
-        setHighlightedLines(new Set());
+        const panelEl = codePanelRef.current?.getElement();
+        panelEl?.querySelectorAll('.line-highlighted').forEach(el => {
+          el.classList.remove('line-highlighted');
+        });
       }, 3000);
     } else if (onLinkClick) {
       // External link - use the callback
       onLinkClick(targetAnchor, '');
     }
-  };
+  }, [resolvedChunks, expandChunk, filename, onLinkClick]);
 
-  const renderResolvedLink = (link: { target: string; reason: string }, index: number) => {
-    // Parse cross-file links: "file.py@function:name" or just "@function:name"
-    const crossFileMatch = link.target.match(/^([^@]+)(@.+)$/);
-    const targetFile = crossFileMatch ? crossFileMatch[1] : null;
-    const targetAnchor = crossFileMatch ? crossFileMatch[2] : link.target;
+  // Memoized link click handler for ChunkCard
+  const handleChunkLinkClick = useCallback((targetFile: string, targetAnchor: string) => {
+    if (targetFile === filename) {
+      handleLinkClick(targetAnchor);
+    } else if (onLinkClick) {
+      onLinkClick(targetFile, targetAnchor);
+    }
+  }, [filename, handleLinkClick, onLinkClick]);
 
-    const isInternal = resolvedChunks?.some(c => c.anchor === targetAnchor);
-    const isCrossFile = !!targetFile;
-    const isChunkRef = targetAnchor.startsWith('@chunk:');
-
-    // Determine link type for styling
-    const linkType = isChunkRef ? 'chunk' : isCrossFile ? 'external' : isInternal ? 'internal' : 'unresolved';
-
-    return (
-      <div
-        key={index}
-        className={`chunk-link ${isInternal && !isCrossFile ? 'clickable' : ''} link-type-${linkType}`}
-        onClick={(e) => {
-          if (isInternal && !isCrossFile) {
-            e.stopPropagation();
-            handleLinkClick(targetAnchor);
-          }
-        }}
-        onMouseEnter={() => {
-          if (isInternal && !isCrossFile) {
-            const targetChunk = resolvedChunks?.find(c => c.anchor === targetAnchor);
-            if (targetChunk?.resolved) {
-              const lines = new Set<number>();
-              for (let i = targetChunk.resolved.startLine; i <= targetChunk.resolved.endLine; i++) {
-                lines.add(i);
-              }
-              setHighlightedLines(lines);
-            }
-          }
-        }}
-        onMouseLeave={() => {
-          setHighlightedLines(new Set());
-        }}
-      >
-        <span className="link-icon">
-          {isChunkRef ? '📎' : isCrossFile ? '📁' : isInternal ? '↓' : '↗'}
-        </span>
-        {targetFile && <span className="link-file">{targetFile}</span>}
-        <span className="link-target">{targetAnchor}</span>
-        <span className="link-reason">{link.reason}</span>
-      </div>
-    );
-  };
+  // Memoized translations for ChunkCard to prevent re-renders
+  const chunkCardTranslations = useMemo(() => ({
+    new: translations.new,
+    existing: translations.existing,
+    deepDive: translations.deepDive,
+    deepDiveTooltip: translations.deepDiveTooltip,
+  }), [translations.new, translations.existing, translations.deepDive, translations.deepDiveTooltip]);
 
   const hasStaleChunks = resolvedChunks?.some(c => c.hashMatch === false);
 
-  // Calculate total panel height needed
-  const panelMinHeight = useMemo(() => {
-    if (calculatePositions.length === 0) return 0;
-    const lastIdx = calculatePositions.length - 1;
-    const lastChunkId = hasV2Chunks
-      ? resolvedChunks?.[lastIdx]?.anchor
-      : undefined;
-    const lastHeight = lastChunkId ? (chunkHeights.get(lastChunkId) || COLLAPSED_CARD_HEIGHT) : COLLAPSED_CARD_HEIGHT;
-    return calculatePositions[lastIdx] + lastHeight + 20;
-  }, [calculatePositions, chunkHeights, hasV2Chunks, resolvedChunks]);
+  // No need for panelMinHeight anymore - CSS flow handles height automatically
 
   return (
     <div className={`diff-viewer ${hasStaleChunks ? 'has-stale' : ''}`}>
@@ -528,284 +482,39 @@ ${t.promptQuestionPlaceholder}
       </div>
 
       <div className="diff-container">
-        {/* SVG Connector Layer */}
-        {(isDiffMode || isBrowseMode) && chunkTargets.length > 0 && (
-          <svg className="connector-layer" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 10 }}>
-            {chunkTargets.map((target) => {
-              // Skip connectors for chunks in context sections (not in diff)
-              const rowIndex = lineMaps.newLineMap.get(target.startLine);
-              if (rowIndex === undefined) return null;
+        {/* Left: Code Panel - Memoized, won't re-render on chunk expand */}
+        <CodePanel
+          ref={codePanelRef}
+          isDiffMode={isDiffMode}
+          isBrowseMode={isBrowseMode}
+          isIntentsOnly={isIntentsOnly}
+          file={file}
+          resolvedChunks={resolvedChunks}
+          fullFileContent={fullFileContent}
+          highlightedDiffLines={highlightedDiffLines}
+          highlightedBrowseLines={highlightedBrowseLines}
+          language={language}
+        />
 
-              const isActive = activeChunk === target.chunkId;
-              const codeY = rowIndex * LINE_HEIGHT + LINE_HEIGHT / 2;
-              const chunkY = target.topPosition + 20; // Middle of chunk header
-
-              // Calculate the x positions
-              const codeX = codePanelWidth;
-              const chunkX = codeX + 10;
-
-              return (
-                <g key={target.chunkId} opacity={isActive ? 1 : 0.3}>
-                  <path
-                    d={`M ${codeX - 5} ${codeY} C ${codeX + 20} ${codeY}, ${chunkX - 20} ${chunkY}, ${chunkX} ${chunkY}`}
-                    fill="none"
-                    stroke={isActive ? '#58a6ff' : '#484f58'}
-                    strokeWidth={isActive ? 2 : 1}
-                    strokeDasharray={isActive ? 'none' : '4 2'}
-                  />
-                  <circle cx={codeX - 5} cy={codeY} r={3} fill={isActive ? '#58a6ff' : '#484f58'} />
-                </g>
-              );
-            })}
-          </svg>
-        )}
-
-        {/* Left: Code Panel */}
-        <div className="diff-code-panel" ref={codePanelRef}>
-          {/* Diff mode: show hunks only (no context sections) */}
-          {isDiffMode && file && file.hunks.map((hunk, hunkIdx) => (
-            <div key={`hunk-${hunkIdx}`}>
-              {hunk.lines.map((line, lineIdx) => {
-                const lineNum = line.newLineNumber || line.oldLineNumber || 0;
-                const isHighlighted = highlightedLines.has(lineNum);
-                return (
-                  <div
-                    key={`${hunkIdx}-${lineIdx}`}
-                    className={`diff-line diff-line-${line.type}${isHighlighted ? ' line-highlighted' : ''}`}
-                    ref={(el) => {
-                      if (el && lineNum) lineRefs.current.set(lineNum, el);
-                    }}
-                    data-line={lineNum}
-                  >
-                    <span className="line-number line-number-old">{line.oldLineNumber || ""}</span>
-                    <span className="line-number line-number-new">{line.newLineNumber || ""}</span>
-                    <span className="line-indicator">
-                      {line.type === "add" ? "+" : line.type === "remove" ? "-" : " "}
-                    </span>
-                    <span
-                      className="line-content"
-                      dangerouslySetInnerHTML={{ __html: highlightLine(line.content, language) }}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          ))}
-
-          {/* Intents-only mode: show resolved code */}
-          {isIntentsOnly && resolvedChunks && resolvedChunks.map((chunk, chunkIdx) => {
-            if (!chunk.resolved?.content) return null;
-            const isStale = chunk.hashMatch === false;
-            const codeLines = chunk.resolved.content.split('\n');
-
-            return (
-              <div key={chunkIdx} className={`code-section ${isStale ? 'stale' : ''}`}>
-                {chunkIdx > 0 && <div className="code-section-separator" />}
-                <div className="code-section-header">
-                  <span className="anchor-badge">{chunk.anchor}</span>
-                  <span className="line-range-badge">L{chunk.resolved.startLine}-{chunk.resolved.endLine}</span>
-                  {isStale && <span className="stale-badge">Stale</span>}
-                </div>
-                {codeLines.map((line, lineIdx) => (
-                  <div key={lineIdx} className="diff-line diff-line-context">
-                    <span className="line-number line-number-old">
-                      {chunk.resolved!.startLine + lineIdx}
-                    </span>
-                    <span className="line-number line-number-new">
-                      {chunk.resolved!.startLine + lineIdx}
-                    </span>
-                    <span className="line-indicator"> </span>
-                    <span
-                      className="line-content"
-                      dangerouslySetInnerHTML={{ __html: highlightLine(line, language) }}
-                    />
-                  </div>
-                ))}
-              </div>
-            );
-          })}
-
-          {/* Browse mode: show full file content */}
-          {isBrowseMode && fullFileContent && fullFileContent.split('\n').map((line, idx) => {
-            const lineNum = idx + 1;
-            const isHighlighted = highlightedLines.has(lineNum);
-            return (
-              <div
-                key={idx}
-                className={`diff-line diff-line-context${isHighlighted ? ' line-highlighted' : ''}`}
-                ref={(el) => {
-                  if (el) lineRefs.current.set(lineNum, el);
-                }}
-                data-line={lineNum}
-              >
-                <span className="line-number line-number-old">{lineNum}</span>
-                <span className="line-number line-number-new">{lineNum}</span>
-                <span className="line-indicator"> </span>
-                <span
-                  className="line-content"
-                  dangerouslySetInnerHTML={{ __html: highlightLine(line, language) }}
-                />
-              </div>
-            );
-          })}
-
-          </div>
-
-        {/* Right: Chunk Cards Panel */}
-        <div
-          ref={panelRef}
-          className="diff-explanation-panel"
-          style={{ minHeight: panelMinHeight > 0 ? panelMinHeight : undefined }}
-        >
-          <div className="explanation-scroll-container">
-            {/* V2 resolved chunks - in diff mode, only show chunks visible in diff; in browse mode, show all */}
-            {hasV2Chunks && resolvedChunks && resolvedChunks.map((chunk, i) => {
-              const isObsolete = !chunk.resolved;
-              const isExpanded = expandedChunks.has(chunk.anchor);
-              const topPosition = calculatePositions[i] || 0;
-              const chunkId = chunk.anchor;
-              const isStale = !isObsolete && chunk.hashMatch === false;
-              const isActive = activeChunk === chunkId;
-
-              // Get isNew and isHighlighted from extended chunk (added in App.tsx)
-              const isNewIntent = (chunk as { isNew?: boolean }).isNew ?? false;
-              const isChunkHighlighted = (chunk as { isHighlighted?: boolean }).isHighlighted ?? true;
-              const chunkOverlaps = chunk.overlaps || [];
-              const hasOverlaps = chunkOverlaps.length > 0;
-
-              // Unresolved chunks: show documentation without code linking
-              if (isObsolete) {
-                return (
-                  <div
-                    key={i}
-                    id={`chunk-${filename}-${chunkId}`}
-                    ref={(el) => {
-                      if (el) chunkRefs.current.set(chunkId, el);
-                    }}
-                    className={`chunk-card unresolved ${isExpanded ? 'expanded' : ''} ${!isChunkHighlighted ? 'dimmed' : ''}`}
-                    style={{ position: "absolute", top: topPosition }}
-                  >
-                    <div
-                      className="chunk-card-header"
-                      onClick={() => toggleChunk(chunkId)}
-                    >
-                      <span className="chunk-title">{chunk.title}</span>
-                      <span className="chunk-toggle">{isExpanded ? "▼" : "▶"}</span>
-                    </div>
-                    {isExpanded && (
-                      <div className="chunk-card-body">
-                        {chunk.description?.trim() && (
-                          <p className="chunk-description">{chunk.description}</p>
-                        )}
-                        {chunk.decisions && chunk.decisions.length > 0 && (
-                          <div className="chunk-decisions">
-                            {chunk.decisions.map((decision, idx) => (
-                              <div key={idx} className="chunk-decision">
-                                <span className="decision-icon">💡</span>
-                                <span>{decision}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        <p className="chunk-anchor-info">
-                          <code>{chunk.anchor}</code>
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                );
-              }
-
-              // In diff mode, only show chunks whose lines are visible in the diff
-              const isVisibleInDiff = lineMaps.newLineMap.has(chunk.resolved!.startLine);
-              if (isDiffMode && !isVisibleInDiff) return null;
-
-              return (
-                <div
-                  key={i}
-                  id={`chunk-${filename}-${chunkId}`}
-                  ref={(el) => {
-                    if (el) chunkRefs.current.set(chunkId, el);
-                  }}
-                  className={`chunk-card ${isExpanded ? 'expanded' : ''} ${isStale ? 'stale' : ''} ${isActive ? 'active' : ''} ${!isChunkHighlighted ? 'dimmed' : ''} ${hasOverlaps ? 'has-overlap' : ''}`}
-                  style={{ position: "absolute", top: topPosition }}
-                  onMouseEnter={() => handleChunkActivate(chunkId, chunk.resolved!.startLine, chunk.resolved!.endLine)}
-                  onMouseLeave={handleChunkDeactivate}
-                >
-                  <div
-                    className="chunk-card-header"
-                    onClick={() => {
-                      toggleChunk(chunkId);
-                      handleChunkActivate(chunkId, chunk.resolved!.startLine, chunk.resolved!.endLine);
-                    }}
-                  >
-                    <span className="chunk-line-range">
-                      L{chunk.resolved!.startLine}-{chunk.resolved!.endLine}
-                    </span>
-                    <span className={isNewIntent ? "intent-new-badge" : "intent-existing-badge"}>
-                      {isNewIntent ? translations.new : translations.existing}
-                    </span>
-                    {hasOverlaps && (
-                      <span className="overlap-badge" title={`Overlaps with: ${chunkOverlaps.join(', ')}`}>
-                        OVERLAP
-                      </span>
-                    )}
-                    {chunk.links && chunk.links.length > 0 && (
-                      <span className="links-badge" title={`${chunk.links.length} link(s)`}>
-                        🔗 {chunk.links.length}
-                      </span>
-                    )}
-                    <span className="chunk-title">{chunk.title}</span>
-                    <span className="chunk-toggle">{isExpanded ? "▼" : "▶"}</span>
-                  </div>
-                  {isExpanded && (
-                    <div className="chunk-card-body">
-                      {chunk.description?.trim() && (
-                        <p className="chunk-description">{chunk.description}</p>
-                      )}
-                      {chunk.decisions.length > 0 && (
-                        <div className="chunk-decisions">
-                          {chunk.decisions.map((d, j) => (
-                            <div key={j} className="decision">
-                              <span className="decision-arrow">→</span> {d}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {chunk.links.length > 0 && (
-                        <div className="chunk-links">
-                          <div className="links-label">Liens:</div>
-                          {chunk.links.map((link, j) => renderResolvedLink(link, j))}
-                        </div>
-                      )}
-                      {hasOverlaps && (
-                        <div className="chunk-overlaps">
-                          <div className="overlaps-label">⚠️ Chevauche:</div>
-                          {chunkOverlaps.map((overlap, j) => (
-                            <span key={j} className="overlap-anchor">{overlap}</span>
-                          ))}
-                        </div>
-                      )}
-                      <button
-                        className="deep-dive-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeepDive(chunk);
-                        }}
-                        title={translations.deepDiveTooltip}
-                      >
-                        <span className="deep-dive-icon">💬</span>
-                        <span className="deep-dive-text">{translations.deepDive}</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        </div>
+        {/* Right: Chunk Cards Panel - Memoized, isolated re-renders */}
+        <ChunksPanel
+          resolvedChunks={resolvedChunks}
+          filename={filename}
+          chunkTops={chunkTops}
+          chunkPanelHeight={chunkPanelHeight}
+          activeChunk={activeChunk}
+          isDiffMode={isDiffMode}
+          newLineMap={lineMaps.newLineMap}
+          selectedIntentId={selectedIntentId}
+          isExpanded={isExpanded}
+          onToggle={toggleChunk}
+          onActivate={handleChunkActivate}
+          onDeactivate={handleChunkDeactivate}
+          onDeepDive={handleDeepDive}
+          onLinkClick={handleChunkLinkClick}
+          translations={chunkCardTranslations}
+        />
+      </div>
       {/* Toast notification */}
       {toast && (
         <div className="toast-notification">
@@ -817,3 +526,9 @@ ${t.promptQuestionPlaceholder}
     </div>
   );
 }
+
+/**
+ * Memoized DiffViewer - only re-renders when props change
+ * Each file viewer is independent and won't re-render when other files change
+ */
+export const DiffFileViewer = memo(DiffFileViewerInner);

@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { getFilePath, isNewFile } from '../lib/fileUtils';
+import type { FileData } from '../types';
 
 export interface TreeNode {
   name: string;
@@ -6,14 +8,6 @@ export interface TreeNode {
   isFile: boolean;
   isNew?: boolean;
   children: TreeNode[];
-}
-
-interface FileData {
-  filename: string;
-  diff: {
-    oldPath?: string;
-    newPath?: string;
-  };
 }
 
 interface UseFileTreeReturn {
@@ -34,13 +28,13 @@ function buildFileTree(files: FileData[]): TreeNode[] {
   const root: TreeNode[] = [];
 
   for (const file of files) {
-    const filePath = file.diff.newPath || file.diff.oldPath || file.filename;
+    const filePath = getFilePath(file);
     if (!filePath || filePath.trim() === '') continue;
 
     const parts = filePath.split('/').filter(p => p.length > 0);
     if (parts.length === 0) continue;
 
-    const isNew = file.diff?.oldPath === "/dev/null" || !file.diff?.oldPath;
+    const isNew = isNewFile(file);
 
     let currentLevel = root;
     let currentPath = '';

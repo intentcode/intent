@@ -55,21 +55,85 @@ Intent uses GitHub OAuth for accessing private repositories. Public repos work w
 ```
 intent/
 ├── src/
-│   ├── App.tsx              # Main app with modes and file tree
-│   ├── App.css              # All styles
+│   ├── App.tsx                    # Main app with modes and routing
+│   ├── App.css                    # Application styles (uses CSS variables)
+│   ├── main.tsx                   # React entry point
+│   ├── index.css                  # Global resets, imports theme
+│   │
+│   ├── styles/
+│   │   └── theme.css              # Design system: colors, typography, spacing
+│   │
+│   ├── hooks/
+│   │   ├── index.ts               # Barrel export
+│   │   ├── useAuth.ts             # Authentication state management
+│   │   ├── usePRSwitcher.ts       # PR dropdown state & navigation
+│   │   ├── useFileTree.ts         # File tree building & expansion
+│   │   └── useScrollIndicator.ts  # Scroll marker position calculation
+│   │
 │   ├── components/
-│   │   ├── DiffViewer.tsx   # Unified diff/browse viewer with chunk cards
-│   │   └── RepoSelector.tsx # Repository and branch selection
+│   │   ├── common/
+│   │   │   ├── index.ts           # Barrel export
+│   │   │   ├── PRSwitcher.tsx     # Reusable PR dropdown component
+│   │   │   └── ScrollIndicator.tsx # Scroll position markers
+│   │   ├── DiffViewer.tsx         # Unified diff/browse viewer
+│   │   ├── LandingPage.tsx        # Home page with repo selection
+│   │   └── RepoSelector.tsx       # Repository and branch selection
+│   │
 │   └── lib/
-│       ├── api.ts           # Backend API client
-│       ├── parseDiff.ts     # Parse unified git diff
-│       └── parseIntentV2.ts # Parse v2 intent format
+│       ├── api.ts                 # Backend API client
+│       ├── auth.ts                # Authentication functions
+│       ├── language.ts            # i18n utilities
+│       ├── parseDiff.ts           # Parse unified git diff
+│       ├── parseIntentV2.ts       # Parse v2 intent format
+│       └── anchorResolver.ts      # Semantic anchor resolution
+│
 ├── server/
-│   └── index.js             # Express backend for git operations
+│   ├── index.ts                   # Express backend (port 3001)
+│   └── services/
+│       ├── tokenManager.ts        # GitHub token management (App/OAuth)
+│       └── intentLoader.ts        # Intent loading & anchor resolution
+│
+├── api/                           # Vercel serverless functions
+│   ├── _lib/
+│   │   ├── github.ts              # GitHub API helpers
+│   │   └── intents.ts             # Intent loading helpers
+│   ├── auth/                      # OAuth endpoints
+│   │   ├── github.ts
+│   │   ├── callback.ts
+│   │   ├── me.ts
+│   │   └── logout.ts
+│   └── github-pr.ts               # PR API endpoint
+│
+├── .intent/
+│   ├── manifest.yaml              # Lists all intent files
+│   └── intents/                   # Intent documentation files
+│       ├── 001-smart-branch-discovery.intent.md
+│       ├── ...
+│       └── 016-architecture-refactoring.intent.md
+│
 ├── spec/
-│   └── intent-format-v2.md  # Intent v2 format specification
+│   └── intent-format-v2.md        # Intent v2 format specification
+│
 └── CLAUDE.md
 ```
+
+### Key Architecture Patterns
+
+**CSS Design System** (`src/styles/theme.css`):
+- All colors defined as CSS custom properties (`--color-*`)
+- Typography scale: `--font-size-xs` to `--font-size-3xl`
+- Spacing scale: `--spacing-1` to `--spacing-16`
+- Pre-built utility classes: `.badge-*`, `.card`, `.btn-*`
+
+**React Hooks** (`src/hooks/`):
+- `useAuth`: Authentication state with login/logout
+- `usePRSwitcher`: PR dropdown with lazy loading
+- `useFileTree`: File tree building with collapse logic
+- `useScrollIndicator`: Scroll marker positions via MutationObserver
+
+**Backend Services** (`server/services/`):
+- `tokenManager`: GitHub App JWT, installation tokens, OAuth fallback
+- `intentLoader`: Intent parsing, anchor resolution, overlap detection
 
 ## Commands
 

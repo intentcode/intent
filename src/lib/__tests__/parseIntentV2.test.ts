@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseIntentV2, parseManifest } from './parseIntentV2'
+import { parseIntentV2, parseManifest } from '../parseIntentV2'
 
 describe('parseIntentV2', () => {
   describe('frontmatter parsing', () => {

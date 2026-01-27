@@ -1,29 +1,36 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { createContext, useContext, useState, useCallback, useMemo, useEffect, useRef, type ReactNode } from 'react';
 import { fetchOpenPRs, type OpenPR } from '../lib/api';
 
-interface UsePRSwitcherReturn {
+interface PRSwitcherContextType {
+  // State
   isOpen: boolean;
   prs: OpenPR[];
   isLoading: boolean;
-  toggle: () => Promise<void>;
+
+  // Actions
+  toggle: () => void;
   close: () => void;
   navigateTo: (prNumber: number) => void;
+
+  // Ref for click-outside detection
   dropdownRef: React.RefObject<HTMLDivElement | null>;
 }
 
-interface UsePRSwitcherOptions {
+const PRSwitcherContext = createContext<PRSwitcherContextType | null>(null);
+
+interface PRSwitcherProviderProps {
+  children: ReactNode;
   owner?: string;
   repo?: string;
   currentPrNumber?: number;
 }
 
 /**
- * Hook for managing PR switcher dropdown state
- * Handles fetching PRs, click-outside detection, and navigation
+ * Provider for PR switcher state
+ * Manages open/close state, PR fetching, and navigation
+ * Only consumers of this context re-render when state changes
  */
-export function usePRSwitcher(options: UsePRSwitcherOptions): UsePRSwitcherReturn {
-  const { owner, repo, currentPrNumber } = options;
-
+export function PRSwitcherProvider({ children, owner, repo, currentPrNumber }: PRSwitcherProviderProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [prs, setPrs] = useState<OpenPR[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -43,6 +50,11 @@ export function usePRSwitcher(options: UsePRSwitcherOptions): UsePRSwitcherRetur
 
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
+
+  // Reset PRs when repo changes
+  useEffect(() => {
+    setPrs([]);
+  }, [owner, repo]);
 
   const toggle = useCallback(async () => {
     if (!owner || !repo) return;
@@ -76,7 +88,7 @@ export function usePRSwitcher(options: UsePRSwitcherOptions): UsePRSwitcherRetur
     window.location.href = `/${owner}/${repo}/pull/${prNumber}`;
   }, [owner, repo, currentPrNumber]);
 
-  return {
+  const value = useMemo<PRSwitcherContextType>(() => ({
     isOpen,
     prs,
     isLoading,
@@ -84,5 +96,23 @@ export function usePRSwitcher(options: UsePRSwitcherOptions): UsePRSwitcherRetur
     close,
     navigateTo,
     dropdownRef,
-  };
+  }), [isOpen, prs, isLoading, toggle, close, navigateTo]);
+
+  return (
+    <PRSwitcherContext.Provider value={value}>
+      {children}
+    </PRSwitcherContext.Provider>
+  );
+}
+
+/**
+ * Hook to access PR switcher context
+ * @throws Error if used outside PRSwitcherProvider
+ */
+export function usePRSwitcherContext(): PRSwitcherContextType {
+  const context = useContext(PRSwitcherContext);
+  if (!context) {
+    throw new Error('usePRSwitcherContext must be used within a PRSwitcherProvider');
+  }
+  return context;
 }

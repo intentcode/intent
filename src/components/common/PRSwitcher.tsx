@@ -1,4 +1,5 @@
 import type { OpenPR } from '../../lib/api';
+import './PRSwitcher.css';
 
 interface PRSwitcherProps {
   isOpen: boolean;

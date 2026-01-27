@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import type { IntentV2API } from '../lib/api';
+import { getFileName } from '../lib/fileUtils';
 
 export interface ScrollMarker {
   id: string;
@@ -10,23 +11,33 @@ export interface ScrollMarker {
   filename: string;
 }
 
+interface BaseMarker {
+  id: string;
+  anchor: string;
+  top: number;
+  height: number;
+  filename: string;
+  intentId: string;
+}
+
 interface UseScrollIndicatorOptions {
   intents: IntentV2API[];
   selectedIntentId: string | null;
-  contentSelector?: string;
 }
 
 /**
  * Hook for calculating scroll indicator marker positions
- * Uses MutationObserver to detect DOM changes (chunk expand/collapse)
+ * Positions recalculated only on intent changes (expensive DOM calls)
+ * isHighlighted recalculated via useMemo on selectedIntentId change (cheap)
  */
 export function useScrollIndicator(options: UseScrollIndicatorOptions): ScrollMarker[] {
-  const { intents, selectedIntentId, contentSelector = '.files-content' } = options;
-  const [markers, setMarkers] = useState<ScrollMarker[]>([]);
+  const { intents, selectedIntentId } = options;
+  const [baseMarkers, setBaseMarkers] = useState<BaseMarker[]>([]);
 
+  // Calculate positions only when intents change (expensive - DOM calls)
   useEffect(() => {
     if (intents.length === 0) {
-      setMarkers([]);
+      setBaseMarkers([]);
       return;
     }
 
@@ -35,20 +46,18 @@ export function useScrollIndicator(options: UseScrollIndicatorOptions): ScrollMa
       const viewportHeight = window.innerHeight;
 
       if (docHeight <= viewportHeight) {
-        setMarkers([]);
+        setBaseMarkers([]);
         return;
       }
 
-      const newMarkers: ScrollMarker[] = [];
+      const newMarkers: BaseMarker[] = [];
 
       intents.forEach(intent => {
-        const isHighlighted = selectedIntentId ? intent.frontmatter.id === selectedIntentId : true;
-
         intent.resolvedChunks.forEach(chunk => {
           if (!chunk.resolved) return;
 
           // Find the chunk card element in the DOM
-          const filename = intent.frontmatter.files[0]?.split('/').pop() || '';
+          const filename = getFileName(intent.frontmatter.files[0] || '');
           const chunkEl = document.getElementById(`chunk-${filename}-${chunk.anchor}`);
 
           if (chunkEl) {
@@ -62,43 +71,46 @@ export function useScrollIndicator(options: UseScrollIndicatorOptions): ScrollMa
               anchor: chunk.anchor,
               top: topPercent,
               height: heightPercent,
-              isHighlighted,
               filename,
+              intentId: intent.frontmatter.id,
             });
           }
         });
       });
 
-      setMarkers(newMarkers);
+      setBaseMarkers(newMarkers);
     };
 
     // Calculate after DOM settles
     const timeoutId = setTimeout(calculateMarkers, 100);
 
-    // Recalculate on resize
-    window.addEventListener('resize', calculateMarkers);
+    // Debounced resize handler
+    let resizeTimeout: ReturnType<typeof setTimeout>;
+    const handleResize = () => {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(calculateMarkers, 150);
+    };
 
-    // MutationObserver for DOM changes (chunk expand/collapse)
-    const observer = new MutationObserver(() => {
-      setTimeout(calculateMarkers, 50);
-    });
-
-    const mainContent = document.querySelector(contentSelector);
-    if (mainContent) {
-      observer.observe(mainContent, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['class', 'style'],
-      });
-    }
+    window.addEventListener('resize', handleResize);
 
     return () => {
       clearTimeout(timeoutId);
-      window.removeEventListener('resize', calculateMarkers);
-      observer.disconnect();
+      clearTimeout(resizeTimeout);
+      window.removeEventListener('resize', handleResize);
     };
-  }, [intents, selectedIntentId, contentSelector]);
+  }, [intents]); // Only intents, NOT selectedIntentId
+
+  // Apply isHighlighted based on selectedIntentId (cheap - just mapping)
+  const markers = useMemo(() => {
+    return baseMarkers.map(marker => ({
+      id: marker.id,
+      anchor: marker.anchor,
+      top: marker.top,
+      height: marker.height,
+      filename: marker.filename,
+      isHighlighted: selectedIntentId ? marker.intentId === selectedIntentId : true,
+    }));
+  }, [baseMarkers, selectedIntentId]);
 
   return markers;
 }
